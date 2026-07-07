@@ -1,0 +1,82 @@
+.payout-container {
+  max-width: 900px;
+  margin: 32px auto;
+  padding: 20px;
+  background: #fafbfc;
+  border-radius: 10px;
+  border: 1px solid #e0e0e0;
+}
+
+.payout-title {
+  font-size: 1.3rem;
+  font-weight: bold;
+  margin-bottom: 18px;
+  color: #2d3a4a;
+}
+
+.payout-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 18px;
+  align-items: center;
+}
+
+.payout-input {
+  padding: 7px 10px;
+  border: 1px solid #bbb;
+  border-radius: 4px;
+  min-width: 120px;
+}
+
+.payout-btn {
+  padding: 7px 20px;
+  background: #1976d2;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: 500;
+  margin-left: 8px;
+}
+
+.payout-btn:hover {
+  background: #1253a2;
+}
+
+.payout-message {
+  color: #d32f2f;
+  margin-bottom: 10px;
+}
+
+.payout-preview {
+  background: #f0f7fa;
+  border: 1px solid #b3e5fc;
+  border-radius: 6px;
+  padding: 16px;
+  margin-bottom: 18px;
+  margin-top: 8px;
+}
+
+.payout-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 18px;
+  background: #fff;
+}
+
+.payout-table th, .payout-table td {
+  border: 1px solid #ddd;
+  padding: 8px;
+  text-align: left;
+  font-size: 0.98rem;
+}
+
+.payout-table th {
+  background: #f0f0f0;
+  font-weight: bold;
+}
+
+.payout-table tr:nth-child(even) {
+  background: #fafafa;
+}
