@@ -16,7 +16,7 @@ const EmployeesPage = () => {
 
   const fetchEmployees = async () => {
     try {
-      const res = await axios.get('http://localhost:3000/api/employees');
+      const res = await axios.get('https://nch-backend-63da.onrender.com/api/employees');
       setEmployees(res.data);
     } catch (err) {
       console.error('Failed to fetch employees:', err.message || err);
@@ -25,11 +25,11 @@ const EmployeesPage = () => {
 
   const handleAddOrUpdate = async () => {
      if (editId) {
-      await axios.put(`http://localhost:3000/api/employees/${editId}`, {
+      await axios.put(`https://nch-backend-63da.onrender.com/api/employees/${editId}`, {
         name, contactNumber, baseDailySalary, address
       });
     } else {
-      await axios.post('http://localhost:3000/api/employees', {
+      await axios.post('https://nch-backend-63da.onrender.com/api/employees', {
         name, contactNumber, baseDailySalary, address
       });
     }
@@ -44,13 +44,13 @@ const EmployeesPage = () => {
   const handleEdit = (emp) => {
     setEditId(emp._id);
     setName(emp.name);
-    setContactNumber(emp.contactNumber || '');
+    setContactNumber(.contactNumber || '');
     setBaseDailySalary(emp.baseDailySalary || '');
     setAddress(emp.address || '');
   };
   const handleDelete = (emp) => {
     if (window.confirm(`Are you sure you want to delete ${emp.name}?`)) {
-      axios.delete(`http://localhost:3000/api/employees/${emp._id}`)
+      axios.delete(`https://nch-backend-63da.onrender.com/api/employees/${emp._id}`)
         .then(() => {
           fetchEmployees();
         })

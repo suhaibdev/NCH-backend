@@ -24,7 +24,7 @@ const PayoutPage = () => {
 
   const fetchEmployees = async () => {
     try {
-      const res = await axios.get('http://localhost:3000/api/employees');
+      const res = await axios.get('https://nch-backend-63da.onrender.com/api/employees');
       setEmployees(res.data.filter(e => e.isActive));
     } catch (err) {
       console.error('Failed to fetch employees:', err.message || err);
@@ -33,7 +33,7 @@ const PayoutPage = () => {
 
   const fetchPayouts = async () => {
     try {
-      const res = await axios.get('http://localhost:3000/api/employee/payout');
+      const res = await axios.get('https://nch-backend-63da.onrender.com/api/employee/payout');
       setPayouts(res.data);
       setSelectedPayouts([]); // Clear selection when refetching
     } catch (err) {
@@ -50,7 +50,7 @@ const PayoutPage = () => {
       return;
     }
     try {
-      const res = await axios.post('http://localhost:3000/api/employee/payout/preview', {
+      const res = await axios.post('https://nch-backend-63da.onrender.com/api/employee/payout/preview', {
         employeeId, startDate, endDate
       });
       setPreview(res.data);
@@ -65,7 +65,7 @@ const PayoutPage = () => {
     try {
       // The server recalculates all amounts from attendance itself,
       // so we only need to send the period, deductions and payment method.
-      await axios.post('http://localhost:3000/api/employee/payout', {
+      await axios.post('https://nch-backend-63da.onrender.com/api/employee/payout', {
         employeeId,
         startDate,
         endDate,
@@ -88,7 +88,7 @@ const PayoutPage = () => {
   const handleDeletePayout = async (id) => {
     if (window.confirm('Are you sure you want to delete this payout record?')) {
       try {
-        await axios.delete(`http://localhost:3000/api/employee/payout/${id}`);
+        await axios.delete(`https://nch-backend-63da.onrender.com/api/employee/payout/${id}`);
         await fetchPayouts();
       } catch (err) {
         alert(err.response?.data?.message || 'Error deleting payout.');
@@ -101,7 +101,7 @@ const PayoutPage = () => {
     if (window.confirm(`Are you sure you want to delete ${selectedPayouts.length} selected payout(s)?`)) {
       try {
         await Promise.all(
-          selectedPayouts.map(id => axios.delete(`http://localhost:3000/api/employee/payout/${id}`))
+          selectedPayouts.map(id => axios.delete(`https://nch-backend-63da.onrender.com/api/employee/payout/${id}`))
         );
         await fetchPayouts();
       } catch (err) {
@@ -321,7 +321,7 @@ const PayoutPage = () => {
                     onChange={async e => {
                       const newStatus = e.target.value;
                       try {
-                        await axios.patch(`http://localhost:3000/api/employee/payout/${p._id}/status`, { status: newStatus });
+                        await axios.patch(`https://nch-backend-63da.onrender.com/api/employee/payout/${p._id}/status`, { status: newStatus });
                         await fetchPayouts();
                       } catch(err) {
                         alert(err.response?.data?.message || 'Error updating status.');

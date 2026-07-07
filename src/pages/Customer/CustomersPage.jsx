@@ -21,7 +21,7 @@ const CustomersPage = () => {
 
   const fetchCustomers = async () => {
     try {
-      const res = await axios.get('http://localhost:3000/api/customers');
+      const res = await axios.get('https://nch-backend-63da.onrender.com/api/customers');
       setCustomers(res.data);
     } catch (error) {
       console.error('Error fetching customers:', error);
@@ -35,12 +35,12 @@ const CustomersPage = () => {
           alert('Name and Email are required');
           return;
         }
-        await axios.put(`http://localhost:3000/api/customers/${editId}`, {
+        await axios.put(`https://nch-backend-63da.onrender.com/api/customers/${editId}`, {
           name, email, contactNumber, gst
         });
         alert('Customer updated successfully');
       } else {
-        await axios.post('http://localhost:3000/api/customers', { 
+        await axios.post('https://nch-backend-63da.onrender.com/api/customers', { 
           name, email, contactNumber, gst 
         });
       }
@@ -59,7 +59,7 @@ const CustomersPage = () => {
   const handleDeleteCustomer = async (id) => {
     if (window.confirm('Are you sure?')) {
       try {
-        await axios.delete(`http://localhost:3000/api/customers/${id}`);
+        await axios.delete(`https://nch-backend-63da.onrender.com/api/customers/${id}`);
         fetchCustomers();
         alert('Customer deleted successfully');
       } catch (error) {

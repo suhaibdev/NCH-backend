@@ -37,7 +37,7 @@ const AttendancePage = () => {
 
   const fetchEmployees = async () => {
     try {
-      const res = await axios.get('http://localhost:3000/api/employees');
+      const res = await axios.get('https://nch-backend-63da.onrender.com/api/employees');
       setEmployees(res.data.filter(e => e.isActive));
     } catch (err) {
       console.error('Failed to fetch employees:', err.message || err);
@@ -54,7 +54,7 @@ const AttendancePage = () => {
     const startDate = `${monthStr}-01`;
     const endDate = `${monthStr}-${String(daysInMonth).padStart(2, '0')}`;
     try {
-      const res = await axios.get('http://localhost:3000/api/employee/attendance/range', {
+      const res = await axios.get('https://nch-backend-63da.onrender.com/api/employee/attendance/range', {
         params: { startDate, endDate },
       });
       setMonthRecords(res.data);
@@ -77,7 +77,7 @@ const AttendancePage = () => {
       const finalOvertime = present ? overtime : 0;
       
       if (editRecordId) {
-        await axios.put(`http://localhost:3000/api/employee/attendance/${editRecordId}`, {
+        await axios.put(`https://nch-backend-63da.onrender.com/api/employee/attendance/${editRecordId}`, {
           present,
           workHours: finalWorkHours,
           overtime: finalOvertime,
@@ -85,7 +85,7 @@ const AttendancePage = () => {
           notes
         });
       } else {
-        await axios.post('http://localhost:3000/api/employee/attendance', {
+        await axios.post('https://nch-backend-63da.onrender.com/api/employee/attendance', {
           employeeId, date, present,
           workHours: finalWorkHours,
           overtime: finalOvertime,
@@ -294,7 +294,9 @@ const AttendancePage = () => {
                 
                 let cellTitle = undefined;
                 if (rec.overtime > 0 || rec.advancePayment > 0 || rec.notes) {
-                  cellTitle = `Overtime: ${rec.overtime || 0}h\nAdvance: ₹${rec.advancePayment || 0}\nNotes: ${rec.notes || 'N/A'}`;
+                  cellTitle = `Overtime: ${rec.overtime || 0}h
+Advance: ₹${rec.advancePayment || 0}
+Notes: ${rec.notes || 'N/A'}`;
                 }
 
                 if (rec.present) {
