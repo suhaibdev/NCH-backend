@@ -13,10 +13,18 @@ const port = process.env.PORT || 5000;
 app.use(cors());
 app.use(express.json());
 
+// Import routes
+const employeeRoutes = require('./src/routes/employees');
+const customerRoutes = require('./src/routes/customers');
+
 // A simple test route
 app.get('/', (req, res) => {
   res.send('Backend server is running!');
 });
+
+// Register API routes
+app.use('/api/employees', employeeRoutes);
+app.use('/api/customers', customerRoutes);
 
 // Connect to MongoDB
 mongoose.connect(process.env.MONGODB_URI, {
