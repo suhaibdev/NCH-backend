@@ -1,0 +1,59 @@
+const mongoose = require('mongoose');
+
+const payoutSchema = new mongoose.Schema({
+  employee: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Employee',
+    required: true,
+  },
+  startDate: {
+    type: Date,
+    required: true,
+  },
+  endDate: {
+    type: Date,
+    required: true,
+  },
+  totalDaysWorked: {
+    type: Number,
+    required: true,
+  },
+  totalHoursWorked: {
+    type: Number,
+    default: 0,
+  },
+  totalAmount: {
+    type: Number,
+    required: true,
+  },
+  overtimeHours: {
+    type: Number,
+    default: 0,
+  },
+  overtimeAmount: {
+    type: Number,
+    default: 0,
+  },
+  deductions: {
+    type: Number,
+    default: 0,
+  },
+  paidOn: {
+    type: Date,
+    default: Date.now,
+  },
+  paymentMethod: {
+    type: String,
+    enum: ['cash', 'bank_transfer'],
+    default: 'cash'
+  },
+  status: {
+    type: String,
+    enum: ['pending', 'paid', 'cancelled'],
+    default: 'pending'
+  }
+}, {
+  timestamps: true
+});
+
+module.exports = mongoose.model('Payout', payoutSchema);
