@@ -77,6 +77,16 @@ router.post('/', async (req, res) => {
     const totalAmount = totalHoursWorked * hourlyRate;
     const overtimeAmount = overtimeHours * hourlyRate;
 
+    const existingPayout = await Payout.findOne({
+      employee: employeeId,
+      startDate: new Date(startDate),
+      endDate: new Date(endDate)
+    });
+
+    if (existingPayout) {
+      return res.status(409).json({ message: 'A payout already exists for this employee and date range.' });
+    }
+
     const payout = new Payout({
       employee: employeeId,
       startDate,

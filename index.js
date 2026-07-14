@@ -18,6 +18,9 @@ const employeeRoutes = require('./src/routes/employees');
 const customerRoutes = require('./src/routes/customers');
 const attendanceRoutes = require('./src/routes/attendance');
 const payoutRoutes = require('./src/routes/payout');
+const authRoutes = require('./src/routes/auth');
+const verifyToken = require('./src/middleware/authMiddleware');
+const authorizeRoles = require('./src/middleware/roleMiddleware');
 
 // A simple test route
 app.get('/', (req, res) => {
@@ -25,10 +28,11 @@ app.get('/', (req, res) => {
 });
 
 // Register API routes
-app.use('/api/employees', employeeRoutes);
-app.use('/api/customers', customerRoutes);
-app.use('/api/attendance', attendanceRoutes);
-app.use('/api/payout', payoutRoutes);
+app.use('/api/auth', authRoutes);
+app.use('/api/employees', verifyToken, authorizeRoles('admin'), employeeRoutes);
+app.use('/api/customers', verifyToken, authorizeRoles('admin'), customerRoutes);
+app.use('/api/attendance', verifyToken, authorizeRoles('admin'), attendanceRoutes);
+app.use('/api/payout', verifyToken, authorizeRoles('admin'), payoutRoutes);
 
 // Connect to MongoDB with better error handling
 mongoose.connect(process.env.MONGODB_URI, {
