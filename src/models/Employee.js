@@ -4,27 +4,37 @@ const employeeSchema = new mongoose.Schema({
   name: {
     type: String,
     required: true,
+    trim: true,
   },
+
   baseDailySalary: {
     type: Number,
     required: true,
+    min: 0,
   },
+
   joiningDate: {
     type: Date,
     default: Date.now,
   },
+
+  contactNumber: {
+    type: String,
+    default: '',
+  },
+
+  address: {
+    type: String,
+    default: '',
+  },
+
   isActive: {
     type: Boolean,
     default: true,
-  },
-  contactNumber: {
-    type: String,
-  },
-  address: {
-    type: String,
   }
+
 }, {
-  timestamps: true
+  timestamps: true,
 });
 
 module.exports = mongoose.model('Employee', employeeSchema);
