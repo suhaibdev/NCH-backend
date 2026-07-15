@@ -15,20 +15,29 @@ const attendanceSchema = new mongoose.Schema({
     default: true,
   },
   workHours: {
-    type: Number,
-    default: 8,
-  },
-  overtime: {
-    type: Number,
-    default: 0,
-  },
-  advancePayment: {
-    type: Number,
-    default: 0,
-  },
-  notes: {
-    type: String,
-  }
+  type: Number,
+  default: 8,
+  min: 0,
+  max: 24,
+},
+
+ overtime: {
+   type: Number,
+   default: 0,
+   min: 0,
+   max: 24,
+ },
+
+ advancePayment: {
+   type: Number,
+   default: 0,
+  min: 0,
+ },
+ notes: {
+  type: String,
+  default: '',
+  trim: true,
+ },
 }, {
   timestamps: true
 });

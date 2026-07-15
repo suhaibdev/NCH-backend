@@ -7,7 +7,7 @@ const Employee = require('../models/Employee');
 router.get('/', async (req, res) => {
   try {
     const attendance = await Attendance.find()
-      .populate('employee', 'name workType')
+      .populate('employee', 'name')
       .sort({ date: -1 });
     res.json(attendance);
   } catch (err) {
@@ -24,7 +24,7 @@ router.get('/range', async (req, res) => {
         $gte: new Date(startDate),
         $lte: new Date(endDate)
       }
-    }).populate('employee', 'name workType');
+    }).populate('employee', 'name');
     res.json(attendance);
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -37,7 +37,7 @@ router.get('/employee/:employeeId', async (req, res) => {
     const attendance = await Attendance.find({
       employee: req.params.employeeId
     })
-    .populate('employee', 'name workType')
+    .populate('employee', 'name')
     .sort({ date: -1 });
     res.json(attendance);
   } catch (err) {
@@ -49,6 +49,35 @@ router.get('/employee/:employeeId', async (req, res) => {
 router.post('/', async (req, res) => {
   try {
     const { employeeId, date, present, workHours, overtime, advancePayment, notes } = req.body;
+    // Validation
+
+    if (!employeeId || !date) {
+      return res.status(400).json({
+        message: 'Employee and date are required.'
+      });
+    }
+
+    const hours = Number(workHours ?? 0);
+    const ot = Number(overtime ?? 0);
+    const advance = Number(advancePayment ?? 0);
+
+    if (hours < 0 || hours > 24) {
+      return res.status(400).json({
+        message: 'Work hours must be between 0 and 24.'
+      });
+    }
+
+    if (ot < 0 || ot > 24) {
+      return res.status(400).json({
+        message: 'Overtime must be between 0 and 24.'
+      });
+    }
+
+    if (advance < 0) {
+      return res.status(400).json({
+        message: 'Advance payment cannot be negative.'
+      });
+    }
 
     // Check if employee exists
     const employee = await Employee.findById(employeeId);
@@ -57,9 +86,20 @@ router.post('/', async (req, res) => {
     }
 
     // Check if attendance already marked for this date
+    const selectedDate = new Date(date);
+
+    const startOfDay = new Date(selectedDate);
+    startOfDay.setHours(0, 0, 0, 0);
+
+    const endOfDay = new Date(selectedDate);
+    endOfDay.setHours(23, 59, 59, 999);
+
     const existingAttendance = await Attendance.findOne({
       employee: employeeId,
-      date: new Date(date)
+      date: {
+        $gte: startOfDay,
+        $lte: endOfDay
+      }
     });
 
     if (existingAttendance) {
@@ -82,7 +122,7 @@ router.post('/', async (req, res) => {
     });
 
     const newAttendance = await attendance.save();
-    await newAttendance.populate('employee', 'name workType');
+    await newAttendance.populate('employee', 'name');
     res.status(201).json(newAttendance);
   } catch (err) {
     res.status(400).json({ message: err.message });
@@ -105,7 +145,7 @@ router.put('/:id', async (req, res) => {
     });
 
     const updatedAttendance = await attendance.save();
-    await updatedAttendance.populate('employee', 'name workType');
+    await updatedAttendance.populate('employee', 'name');
     res.json(updatedAttendance);
   } catch (err) {
     res.status(400).json({ message: err.message });
@@ -119,7 +159,7 @@ router.delete('/:id', async (req, res) => {
     if (!attendance) {
       return res.status(404).json({ message: 'Attendance record not found' });
     }
-    await attendance.remove();
+    await attendance.deleteOne();
     res.json({ message: 'Attendance record deleted' });
   } catch (err) {
     res.status(500).json({ message: err.message });
