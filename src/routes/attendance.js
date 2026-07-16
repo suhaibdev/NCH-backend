@@ -200,5 +200,59 @@ router.post('/bulk', async (req, res) => {
     res.status(400).json({ message: err.message });
   }
 });
+// =======================================
+// Outstanding Advance Report
+// =======================================
+
+router.get('/advance-summary', async (req, res) => {
+  try {
+    const summary = await Attendance.aggregate([
+      {
+        $match: {
+          advancePayment: { $gt: 0 }
+        }
+      },
+      {
+        $group: {
+          _id: '$employee',
+          totalAdvance: {
+            $sum: '$advancePayment'
+          }
+        }
+      },
+      {
+        $lookup: {
+          from: 'employees',
+          localField: '_id',
+          foreignField: '_id',
+          as: 'employee'
+        }
+      },
+      {
+        $unwind: '$employee'
+      },
+      {
+        $project: {
+          employeeId: '$employee._id',
+          employeeName: '$employee.name',
+          totalAdvance: 1
+        }
+      },
+      {
+        $sort: {
+          employeeName: 1
+        }
+      }
+    ]);
+
+    res.json(summary);
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({
+      message: 'Unable to load advance summary.'
+    });
+  }
+});
 
 module.exports = router;

@@ -38,7 +38,8 @@ router.post('/', async (req, res) => {
       startDate,
       endDate,
       deductions,
-      paymentMethod
+      advanceDeducted,
+      paymentMethod,
     } = req.body;
 
     // Find employee
@@ -63,6 +64,28 @@ router.post('/', async (req, res) => {
       },
       present: true
     });
+    // Total advance ever taken
+    const allAttendance = await Attendance.find({
+      employee: employeeId,
+    });
+
+    const totalAdvanceTaken = allAttendance.reduce(
+      (sum, item) => sum + (item.advancePayment || 0),
+      0,
+    );
+
+    // Total advance already deducted in previous payouts
+    const previousPayouts = await Payout.find({
+      employee: employeeId,
+    });
+
+    const totalAdvanceRecovered = previousPayouts.reduce(
+      (sum, item) => sum + (item.advanceDeducted || 0),
+      0,
+    );
+
+    const remainingAdvance =
+      totalAdvanceTaken - totalAdvanceRecovered;
 
     const HOURS_PER_DAY = 8; // One full working day = 8 hours.
     const hourlyRate = employee.baseDailySalary / HOURS_PER_DAY;
@@ -87,6 +110,14 @@ router.post('/', async (req, res) => {
       return res.status(409).json({ message: 'A payout already exists for this employee and date range.' });
     }
 
+    const manualAdvance = Number(advanceDeducted || 0);
+
+      if (manualAdvance > remainingAdvance) {
+        return res.status(400).json({
+          message: `Maximum advance that can be deducted is ₹${remainingAdvance}`,
+        });
+      }
+
     const payout = new Payout({
       employee: employeeId,
       startDate,
@@ -96,7 +127,9 @@ router.post('/', async (req, res) => {
       totalAmount,
       overtimeHours,
       overtimeAmount,
-      deductions: deductions || 0,
+      advanceDeducted: manualAdvance,
+
+      deductions: Number(deductions || 0),
       paymentMethod: paymentMethod || 'cash'
     });
 
@@ -200,23 +233,59 @@ router.post('/preview', async (req, res) => {
     const totalAdvancePayment = attendance.reduce((total, record) =>
       total + (record.advancePayment || 0), 0);
 
+    // All advances ever taken
+    const allAttendance = await Attendance.find({
+      employee: employeeId,
+    });
+
+    const grandAdvanceTaken = allAttendance.reduce(
+      (sum, item) => sum + (item.advancePayment || 0),
+      0,
+    );
+
+    // Already deducted
+    const previousPayouts = await Payout.find({
+      employee: employeeId,
+    });
+
+    const alreadyRecovered = previousPayouts.reduce(
+      (sum, item) => sum + (item.advanceDeducted || 0),
+      0,
+    );
+
+    const remainingAdvance =
+      grandAdvanceTaken - alreadyRecovered;
+
     // Pay is based on real hours worked, not just the number of days.
     const totalAmount = totalHoursWorked * hourlyRate;
     const overtimeAmount = overtimeHours * hourlyRate;
 
     res.json({
-      employeeId,
-      startDate,
-      endDate,
-      totalDaysWorked,
-      totalHoursWorked,
-      hourlyRate,
-      totalAmount,
-      overtimeHours,
-      overtimeAmount,
-      totalAdvancePayment,
-      grossAmount: totalAmount + overtimeAmount
-    });
+    employeeId,
+    startDate,
+    endDate,
+
+    totalDaysWorked,
+    totalHoursWorked,
+
+    hourlyRate,
+
+    totalAmount,
+
+    overtimeHours,
+    overtimeAmount,
+
+    totalAdvancePayment,
+
+    totalAdvanceTaken: grandAdvanceTaken,
+
+    advanceAlreadyRecovered: alreadyRecovered,
+
+    remainingAdvance,
+
+    grossAmount:
+      totalAmount + overtimeAmount,
+  });
   } catch (err) {
     res.status(400).json({ message: err.message });
   }
