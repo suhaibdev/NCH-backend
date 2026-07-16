@@ -18,6 +18,7 @@ const employeeRoutes = require('./src/routes/employees');
 const customerRoutes = require('./src/routes/customers');
 const attendanceRoutes = require('./src/routes/attendance');
 const payoutRoutes = require('./src/routes/payout');
+const dashboardRoutes = require('./src/routes/dashboard');
 const authRoutes = require('./src/routes/auth');
 const verifyToken = require('./src/middleware/authMiddleware');
 const authorizeRoles = require('./src/middleware/roleMiddleware');
@@ -29,6 +30,7 @@ app.get('/', (req, res) => {
 
 // Register API routes
 app.use('/api/auth', authRoutes);
+app.use('/api/dashboard', verifyToken, authorizeRoles('admin'), dashboardRoutes);
 app.use('/api/employees', verifyToken, authorizeRoles('admin'), employeeRoutes);
 app.use('/api/customers', verifyToken, authorizeRoles('admin'), customerRoutes);
 app.use('/api/attendance', verifyToken, authorizeRoles('admin'), attendanceRoutes);
