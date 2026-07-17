@@ -373,7 +373,9 @@ router.post('/', async (req, res) => {
       outstandingAdvanceAfter: Math.max(0, advanceStatus.remainingAdvance - manualAdvance),
       deductions: otherDeduction,
       netSalary,
-      paymentMethod: paymentMethod || 'cash',
+      paymentMethod: "",
+      status: "Pending",
+      paidOn: null,
       remarks: finalRemarks,
       // Hardcoded for now, but with a clear TODO. Never trust client-provided security-sensitive data.
       generatedBy: "Admin", // TODO: Replace with authenticated user (req.user.id)
@@ -476,7 +478,7 @@ router.post('/register', async (req, res) => {
           // Calculate lifetime advance status in the database.
           advance: {
             totalAdvanceTaken: { $sum: '$attendanceRecords.advancePayment' },
-            advanceRecovered: { $sum: '$payoutRecords.advanceDeducted' } // Corrected field name
+            advanceRecovered: { $sum: '$payoutRecords.advaDeducted' } // Corrected field name
           }
         }
       }
@@ -526,6 +528,42 @@ router.post('/register', async (req, res) => {
     res.status(500).json({
       message: 'Failed to generate salary register.',
     });
+  }
+});
+
+// ======================================
+// MARK SALARY AS PAID
+// ======================================
+
+router.patch("/:id/pay", async (req, res) => {
+  try {
+
+    const { paymentMethod } = req.body;
+
+    const payout = await Payout.findById(req.params.id);
+
+    if (!payout) {
+      return res.status(404).json({
+        message: "Payout not found",
+      });
+    }
+
+    payout.status = "Paid";
+    payout.paymentMethod = paymentMethod;
+    payout.paidOn = new Date();
+
+    await payout.save();
+
+    res.json(payout);
+
+  } catch (err) {
+
+    console.error(err);
+
+    res.status(500).json({
+      message: err.message,
+    });
+
   }
 });
 
