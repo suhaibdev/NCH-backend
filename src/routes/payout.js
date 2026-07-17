@@ -566,6 +566,48 @@ router.patch("/:id/pay", async (req, res) => {
 
   }
 });
+
+// ======================================
+// UPDATE PAYOUT STATUS
+// ======================================
+
+router.patch("/:id/status", async (req, res) => {
+  try {
+
+    const { status } = req.body;
+
+    const payout = await Payout.findById(req.params.id);
+
+    if (!payout) {
+      return res.status(404).json({
+        message: "Payout not found",
+      });
+    }
+
+    payout.status = status;
+
+    if (status === "Paid") {
+      payout.paidOn = new Date();
+    } else {
+      payout.paidOn = null;
+      payout.paymentMethod = "";
+    }
+
+    await payout.save();
+
+    res.json(payout);
+
+  } catch (err) {
+
+    console.error(err);
+
+    res.status(500).json({
+      message: err.message,
+    });
+
+  }
+});
+
 // ===============================================
 // DELETE PAYOUT
 // ===============================================
