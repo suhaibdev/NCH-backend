@@ -99,20 +99,20 @@ const payoutSchema = new mongoose.Schema(
 
     // Payment
     paymentMethod: {
-        type: String,
-        enum: ["cash", "bank_transfer", "upi"],
-        default: "cash",
-    },
-
-    status: {
-        type: String,
-        enum: ["pending", "paid", "cancelled"],
-        default: "pending",
+      type: String,
+      enum: ["cash", "upi", "bank", "cheque", ""],
+      default: "",
     },
 
     paidOn: {
         type: Date,
-        default: Date.now,
+        default: null,
+    },
+
+    status: {
+        type: String,
+        enum: ["Pending", "Paid"],
+        default: "Pending",
     },
 
     // Extra

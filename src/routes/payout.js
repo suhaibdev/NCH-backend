@@ -373,7 +373,7 @@ router.post('/', async (req, res) => {
       outstandingAdvanceAfter: Math.max(0, advanceStatus.remainingAdvance - manualAdvance),
       deductions: otherDeduction,
       netSalary,
-      paymentMethod: "",
+      paymentMethod: paymentMethod || "",
       status: "Pending",
       paidOn: null,
       remarks: finalRemarks,
@@ -561,10 +561,41 @@ router.patch("/:id/pay", async (req, res) => {
     console.error(err);
 
     res.status(500).json({
-      message: err.message,
+      message: err.message ||'CREATE PAYOUT ERROR.',
     });
 
   }
+});
+// ===============================================
+// DELETE PAYOUT
+// ===============================================
+
+router.delete("/:id", async (req, res) => {
+
+  try {
+
+    const payout = await Payout.findByIdAndDelete(req.params.id);
+
+    if (!payout) {
+      return res.status(404).json({
+        message: "Payout not found",
+      });
+    }
+
+    res.json({
+      message: "Payout deleted successfully",
+    });
+
+  } catch (err) {
+
+    console.error(err);
+
+    res.status(500).json({
+      message: err.message ||'DELETE PAYOUT ERROR.',
+    });
+
+  }
+
 });
 
 module.exports = router;
