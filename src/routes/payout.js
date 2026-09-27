@@ -312,7 +312,7 @@ router.post('/preview', async (req, res) => {
     // Optimization: Fetch only historical data relevant to the calculation period.
     const [allAttendance, previousPayouts] = await Promise.all([
       Attendance.find({ employee: employeeId, date: { $lte: range.end } }).lean(),
-      Payout.find({ employee: employeeId, paidOn: { $lte: range.end } }).lean()
+      Payout.find({ employee: employeeId, endDate: { $lte: range.end } }).lean()
     ]);
 
     const hourlyRate = roundCurrency(employee.baseDailySalary / STANDARD_WORK_HOURS);
@@ -1399,7 +1399,7 @@ router.post('/', async (req, res) => {
 
       const [allAttendance, previousPayouts] = await Promise.all([
         Attendance.find({ employee: employeeId, date: { $lte: range.end } }).session(session).lean(),
-        Payout.find({ employee: employeeId, paidOn: { $lte: range.end } }).session(session).lean()
+        Payout.find({ employee: employeeId, endDate: { $lte: range.end } }).session(session).lean()
       ]);
 
     const hourlyRate = roundCurrency(employee.baseDailySalary / STANDARD_WORK_HOURS);
