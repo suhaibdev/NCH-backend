@@ -133,6 +133,80 @@ const calculateNetSalary = (grossSalary, advanceDeducted, otherDeduction) => {
 };
 
 // ===============================================
+// BULK PAYOUT HELPERS
+// ===============================================
+
+const VALID_PAYMENT_METHODS = [
+  'cash',
+  'upi',
+  'bank',
+  'cheque',
+];
+
+/**
+ * Groups mongoose records by employee ID.
+ */
+const groupByEmployee = (records) => {
+  const grouped = new Map();
+
+  records.forEach((record) => {
+    const employeeId =
+      record.employee?._id?.toString?.() ||
+      record.employee?.toString?.();
+
+    if (!employeeId) {
+      return;
+    }
+
+    if (!grouped.has(employeeId)) {
+      grouped.set(employeeId, []);
+    }
+
+    grouped.get(employeeId).push(record);
+  });
+
+  return grouped;
+};
+
+/**
+ * Finds an existing payout that overlaps the requested payroll period.
+ */
+const findOverlappingPayout = (
+  payoutRecords,
+  start,
+  end
+) => {
+  return payoutRecords.find((payout) => {
+    if (!payout.startDate || !payout.endDate) {
+      return false;
+    }
+
+    const payoutStart = new Date(
+      payout.startDate
+    );
+
+    const payoutEnd = new Date(
+      payout.endDate
+    );
+
+    return (
+      payoutStart <= end &&
+      payoutEnd >= start
+    );
+  });
+};
+
+/**
+ * Salary slip number generator.
+ */
+const generateSalarySlipNumber = () => {
+  return `SAL-${new Date().getFullYear()}-${Date.now()}-${Math.random()
+    .toString(36)
+    .substring(2, 6)
+    .toUpperCase()}`;
+};
+
+// ===============================================
 // GET ALL PAYOUTS
 // ===============================================
 router.get('/', async (req, res) => {
@@ -249,6 +323,984 @@ router.post('/preview', async (req, res) => {
     console.error(err);
     res.status(500).json({
       message: 'Failed to generate preview.',
+    });
+  }
+});
+
+// ===============================================
+// BULK PAYOUT PREVIEW
+// ===============================================
+
+router.post('/bulk-preview', async (req, res) => {
+  try {
+    const {
+      startDate,
+      endDate,
+    } = req.body;
+
+    const range = validatePayrollRange(
+      startDate,
+      endDate
+    );
+
+    if (!range.valid) {
+      return res
+        .status(range.status)
+        .json({
+          message: range.message,
+        });
+    }
+
+    /*
+     * First find attendance records INSIDE
+     * the requested payroll period.
+     *
+     * This guarantees that only employees who
+     * actually have attendance marked during
+     * this period enter the bulk preview.
+     *
+     * Both Present and Absent records count as
+     * "attendance marked".
+     */
+    const attendanceInPeriod =
+      await Attendance.find({
+        date: {
+          $gte: range.start,
+          $lte: range.end,
+        },
+      }).lean();
+
+    if (attendanceInPeriod.length === 0) {
+      return res.json({
+        startDate,
+        endDate,
+        employees: [],
+        summary: {
+          totalEmployees: 0,
+          selectedByDefault: 0,
+          alreadyCreated: 0,
+          zeroSalary: 0,
+          totalGrossSalary: 0,
+          totalNetSalary: 0,
+        },
+      });
+    }
+
+    /*
+     * Collect unique employee IDs that have at
+     * least one marked attendance record.
+     */
+    const employeeIds = [
+      ...new Set(
+        attendanceInPeriod
+          .map((record) =>
+            record.employee?.toString()
+          )
+          .filter(Boolean)
+      ),
+    ];
+
+    /*
+     * Only ACTIVE employees are allowed.
+     */
+    const employees = await Employee.find({
+      _id: {
+        $in: employeeIds,
+      },
+      isActive: true,
+    })
+      .sort({
+        name: 1,
+      })
+      .lean();
+
+    if (employees.length === 0) {
+      return res.json({
+        startDate,
+        endDate,
+        employees: [],
+        summary: {
+          totalEmployees: 0,
+          selectedByDefault: 0,
+          alreadyCreated: 0,
+          zeroSalary: 0,
+          totalGrossSalary: 0,
+          totalNetSalary: 0,
+        },
+      });
+    }
+
+    const activeEmployeeIds =
+      employees.map(
+        (employee) => employee._id
+      );
+
+    /*
+     * We need historical attendance up to the
+     * payroll end date because advances may have
+     * been taken before this payroll period.
+     */
+    const [
+      historicalAttendance,
+      existingPayouts,
+    ] = await Promise.all([
+      Attendance.find({
+        employee: {
+          $in: activeEmployeeIds,
+        },
+        date: {
+          $lte: range.end,
+        },
+      }).lean(),
+
+      Payout.find({
+        employee: {
+          $in: activeEmployeeIds,
+        },
+      }).lean(),
+    ]);
+
+    const attendanceByEmployee =
+      groupByEmployee(
+        historicalAttendance
+      );
+
+    const payoutsByEmployee =
+      groupByEmployee(
+        existingPayouts
+      );
+
+    const previewEmployees =
+      employees.map((employee) => {
+        const id =
+          employee._id.toString();
+
+        const employeeAttendance =
+          attendanceByEmployee.get(id) ||
+          [];
+
+        const employeePayouts =
+          payoutsByEmployee.get(id) ||
+          [];
+
+        /*
+         * Count every marked attendance record,
+         * including absent records.
+         */
+        const markedAttendance =
+          employeeAttendance.filter(
+            (record) =>
+              record.date >=
+                range.start &&
+              record.date <=
+                range.end
+          );
+
+        const hourlyRate =
+          roundCurrency(
+            employee.baseDailySalary /
+              STANDARD_WORK_HOURS
+          );
+
+        const payroll =
+          calculatePayrollMetrics(
+            employeeAttendance,
+            range.start,
+            range.end,
+            hourlyRate
+          );
+
+        /*
+         * Only older/equal payroll periods should
+         * affect the employee's advance balance.
+         */
+        const previousPayouts =
+          employeePayouts.filter(
+            (payout) => {
+              if (!payout.endDate) {
+                return false;
+              }
+
+              return (
+                new Date(
+                  payout.endDate
+                ) <= range.end
+              );
+            }
+          );
+
+        const advanceStatus =
+          calculateAdvanceStatus(
+            employeeAttendance,
+            previousPayouts
+          );
+
+        /*
+         * Detect exact OR partially overlapping
+         * payout periods.
+         */
+        const overlappingPayout =
+          findOverlappingPayout(
+            employeePayouts,
+            range.start,
+            range.end
+          );
+
+        const alreadyCreated =
+          Boolean(overlappingPayout);
+
+        /*
+         * Employees with ₹0 gross salary are shown,
+         * but NOT selected automatically.
+         *
+         * Employees with existing/overlapping
+         * payouts are locked completely.
+         */
+        const selectedByDefault =
+          !alreadyCreated &&
+          payroll.grossSalary > 0;
+
+        return {
+          employeeId:
+            employee._id,
+
+          employeeName:
+            employee.name,
+
+          dailySalary:
+            employee.baseDailySalary,
+
+          hourlyRate,
+
+          attendanceMarked:
+            markedAttendance.length,
+
+          totalDaysWorked:
+            payroll.totalDaysWorked,
+
+          totalHoursWorked:
+            payroll.totalHoursWorked,
+
+          overtimeHours:
+            payroll.overtimeHours,
+
+          overtimeAmount:
+            payroll.overtimeAmount,
+
+          baseSalary:
+            payroll.baseSalary,
+
+          grossSalary:
+            payroll.grossSalary,
+
+          totalAdvanceTaken:
+            advanceStatus.totalAdvanceTaken,
+
+          advanceAlreadyRecovered:
+            advanceStatus.advanceRecovered,
+
+          remainingAdvance:
+            advanceStatus.remainingAdvance,
+
+          advanceDeducted: 0,
+
+          otherDeduction: 0,
+
+          netSalary:
+            payroll.grossSalary,
+
+          selectable:
+            !alreadyCreated,
+
+          selectedByDefault,
+
+          zeroSalary:
+            payroll.grossSalary <= 0,
+
+          alreadyCreated,
+
+          existingPayout:
+            overlappingPayout
+              ? {
+                  payoutId:
+                    overlappingPayout._id,
+
+                  startDate:
+                    overlappingPayout.startDate,
+
+                  endDate:
+                    overlappingPayout.endDate,
+
+                  status:
+                    overlappingPayout.status,
+
+                  netSalary:
+                    overlappingPayout.netSalary,
+                }
+              : null,
+        };
+      });
+
+    const summary =
+      previewEmployees.reduce(
+        (result, employee) => {
+          result.totalEmployees += 1;
+
+          result.totalGrossSalary +=
+            employee.grossSalary;
+
+          /*
+           * Initial Net is same as Gross because
+           * bulk advance deduction defaults to 0.
+           */
+          result.totalNetSalary +=
+            employee.netSalary;
+
+          if (
+            employee.selectedByDefault
+          ) {
+            result.selectedByDefault +=
+              1;
+          }
+
+          if (
+            employee.alreadyCreated
+          ) {
+            result.alreadyCreated += 1;
+          }
+
+          if (employee.zeroSalary) {
+            result.zeroSalary += 1;
+          }
+
+          return result;
+        },
+        {
+          totalEmployees: 0,
+          selectedByDefault: 0,
+          alreadyCreated: 0,
+          zeroSalary: 0,
+          totalGrossSalary: 0,
+          totalNetSalary: 0,
+        }
+      );
+
+    summary.totalGrossSalary =
+      roundCurrency(
+        summary.totalGrossSalary
+      );
+
+    summary.totalNetSalary =
+      roundCurrency(
+        summary.totalNetSalary
+      );
+
+    return res.json({
+      startDate,
+      endDate,
+      employees:
+        previewEmployees,
+      summary,
+    });
+  } catch (err) {
+    console.error(
+      'BULK PAYOUT PREVIEW ERROR:',
+      err
+    );
+
+    return res.status(500).json({
+      message:
+        'Failed to generate bulk payout preview.',
+    });
+  }
+});
+
+// ===============================================
+// CREATE BULK PAYOUTS
+// ===============================================
+
+router.post('/bulk', async (req, res) => {
+  try {
+    const {
+      startDate,
+      endDate,
+      payouts,
+    } = req.body;
+
+    const range = validatePayrollRange(
+      startDate,
+      endDate
+    );
+
+    if (!range.valid) {
+      return res
+        .status(range.status)
+        .json({
+          message: range.message,
+        });
+    }
+
+    if (
+      !Array.isArray(payouts) ||
+      payouts.length === 0
+    ) {
+      return res.status(400).json({
+        message:
+          'Please select at least one employee payout.',
+      });
+    }
+
+    /*
+     * Prevent duplicate employee IDs inside the
+     * same request.
+     */
+    const uniqueItems = [];
+
+    const seenEmployees =
+      new Set();
+
+    payouts.forEach((item) => {
+      const id =
+        item.employeeId?.toString();
+
+      if (
+        id &&
+        !seenEmployees.has(id)
+      ) {
+        seenEmployees.add(id);
+
+        uniqueItems.push(item);
+      }
+    });
+
+    const created = [];
+    const failed = [];
+
+    /*
+     * IMPORTANT:
+     *
+     * Each employee is processed separately.
+     *
+     * We intentionally DO NOT use one transaction
+     * for the entire batch because you requested:
+     *
+     * successful payouts must stay created even
+     * when another employee fails.
+     */
+    for (
+      const item of uniqueItems
+    ) {
+      let session = null;
+
+      try {
+        const {
+          employeeId,
+          advanceDeducted = 0,
+          deductions = 0,
+          paymentMethod = 'cash',
+          remarks = '',
+        } = item;
+
+        if (
+          !mongoose.Types.ObjectId.isValid(
+            employeeId
+          )
+        ) {
+          throw new Error(
+            'Invalid employee ID.'
+          );
+        }
+
+        if (
+          !VALID_PAYMENT_METHODS.includes(
+            paymentMethod
+          )
+        ) {
+          throw new Error(
+            'Invalid payment method.'
+          );
+        }
+
+        const employee =
+          await Employee.findById(
+            employeeId
+          ).lean();
+
+        if (!employee) {
+          throw new Error(
+            'Employee not found.'
+          );
+        }
+
+        if (!employee.isActive) {
+          throw new Error(
+            'Employee is inactive.'
+          );
+        }
+
+        /*
+         * Bulk payout is allowed only when at
+         * least one attendance record has been
+         * marked during the selected period.
+         */
+        const attendanceMarked =
+          await Attendance.exists({
+            employee:
+              employeeId,
+
+            date: {
+              $gte: range.start,
+              $lte: range.end,
+            },
+          });
+
+        if (!attendanceMarked) {
+          throw new Error(
+            'No attendance marked for this payroll period.'
+          );
+        }
+
+        session =
+          await mongoose.startSession();
+
+        session.startTransaction();
+
+        /*
+         * Exact and partial overlap protection.
+         */
+        const existing =
+          await Payout.findOne({
+            employee:
+              employeeId,
+
+            startDate: {
+              $lte: range.end,
+            },
+
+            endDate: {
+              $gte: range.start,
+            },
+          }).session(session);
+
+        if (existing) {
+          throw new Error(
+            'A payout for an overlapping period already exists.'
+          );
+        }
+
+        const [
+          allAttendance,
+          previousPayouts,
+        ] = await Promise.all([
+          Attendance.find({
+            employee:
+              employeeId,
+
+            date: {
+              $lte: range.end,
+            },
+          })
+            .session(session)
+            .lean(),
+
+          Payout.find({
+            employee:
+              employeeId,
+
+            endDate: {
+              $lte: range.end,
+            },
+          })
+            .session(session)
+            .lean(),
+        ]);
+
+        const hourlyRate =
+          roundCurrency(
+            employee.baseDailySalary /
+              STANDARD_WORK_HOURS
+          );
+
+        const payroll =
+          calculatePayrollMetrics(
+            allAttendance,
+            range.start,
+            range.end,
+            hourlyRate
+          );
+
+        const advanceStatus =
+          calculateAdvanceStatus(
+            allAttendance,
+            previousPayouts
+          );
+
+        const manualAdvance =
+          Number(
+            advanceDeducted || 0
+          );
+
+        const otherDeduction =
+          Number(
+            deductions || 0
+          );
+
+        if (
+          Number.isNaN(
+            manualAdvance
+          ) ||
+          manualAdvance < 0
+        ) {
+          throw new Error(
+            'Advance deduction cannot be negative.'
+          );
+        }
+
+        if (
+          manualAdvance >
+          advanceStatus.remainingAdvance
+        ) {
+          throw new Error(
+            `Maximum recoverable advance is ₹${roundCurrency(
+              advanceStatus.remainingAdvance
+            )}`
+          );
+        }
+
+        if (
+          Number.isNaN(
+            otherDeduction
+          ) ||
+          otherDeduction < 0
+        ) {
+          throw new Error(
+            'Other deduction cannot be negative.'
+          );
+        }
+
+        /*
+         * Do not silently create a negative salary.
+         */
+        if (
+          manualAdvance +
+            otherDeduction >
+          payroll.grossSalary
+        ) {
+          throw new Error(
+            'Total deductions cannot be greater than gross salary.'
+          );
+        }
+
+        const finalRemarks =
+          String(
+            remarks || ''
+          ).trim();
+
+        if (
+          finalRemarks.length >
+          500
+        ) {
+          throw new Error(
+            'Remarks cannot exceed 500 characters.'
+          );
+        }
+
+        const netSalary =
+          calculateNetSalary(
+            payroll.grossSalary,
+            manualAdvance,
+            otherDeduction
+          );
+
+        const outstandingAfter =
+          roundCurrency(
+            Math.max(
+              0,
+              advanceStatus.remainingAdvance -
+                manualAdvance
+            )
+          );
+
+        const payout =
+          new Payout({
+            employee:
+              employeeId,
+
+            startDate:
+              range.start,
+
+            endDate:
+              range.end,
+
+            totalDaysWorked:
+              payroll.totalDaysWorked,
+
+            totalHoursWorked:
+              payroll.totalHoursWorked,
+
+            overtimeHours:
+              payroll.overtimeHours,
+
+            dailySalary:
+              employee.baseDailySalary,
+
+            hourlyRate,
+
+            baseSalary:
+              payroll.baseSalary,
+
+            overtimeAmount:
+              payroll.overtimeAmount,
+
+            grossSalary:
+              payroll.grossSalary,
+
+            totalAmount:
+              payroll.grossSalary,
+
+            outstandingAdvanceBefore:
+              advanceStatus.remainingAdvance,
+
+            advanceDeducted:
+              manualAdvance,
+
+            outstandingAdvanceAfter:
+              outstandingAfter,
+
+            deductions:
+              otherDeduction,
+
+            netSalary,
+
+            paymentMethod,
+
+            status:
+              'Pending',
+
+            paidOn:
+              null,
+
+            remarks:
+              finalRemarks,
+
+            generatedBy:
+              'Admin',
+
+            printed:
+              false,
+
+            salarySlipNumber:
+              generateSalarySlipNumber(),
+          });
+
+        const saved =
+          await payout.save({
+            session,
+          });
+
+        await session.commitTransaction();
+
+        await saved.populate(
+          'employee',
+          'name baseDailySalary'
+        );
+
+        /*
+         * These returned fields are also exactly
+         * what the frontend print sheet will need.
+         */
+        created.push({
+          _id:
+            saved._id,
+
+          employeeId:
+            saved.employee?._id,
+
+          employeeName:
+            saved.employee?.name,
+
+          startDate:
+            saved.startDate,
+
+          endDate:
+            saved.endDate,
+
+          totalDaysWorked:
+            saved.totalDaysWorked,
+
+          totalHoursWorked:
+            saved.totalHoursWorked,
+
+          grossSalary:
+            saved.grossSalary,
+
+          outstandingAdvanceBefore:
+            saved.outstandingAdvanceBefore,
+
+          advanceDeducted:
+            saved.advanceDeducted,
+
+          outstandingAdvanceAfter:
+            saved.outstandingAdvanceAfter,
+
+          deductions:
+            saved.deductions,
+
+          netSalary:
+            saved.netSalary,
+
+          paymentMethod:
+            saved.paymentMethod,
+
+          status:
+            saved.status,
+
+          createdAt:
+            saved.createdAt,
+
+          salarySlipNumber:
+            saved.salarySlipNumber,
+        });
+      } catch (err) {
+        if (
+          session?.inTransaction()
+        ) {
+          await session.abortTransaction();
+        }
+
+        console.error(
+          'BULK EMPLOYEE PAYOUT ERROR:',
+          err
+        );
+
+        failed.push({
+          employeeId:
+            item.employeeId,
+
+          employeeName:
+            item.employeeName ||
+            '',
+
+          message:
+            err.message ||
+            'Failed to create payout.',
+        });
+      } finally {
+        if (session) {
+          session.endSession();
+        }
+      }
+    }
+
+    /*
+     * Totals are based ONLY on payouts that
+     * actually succeeded.
+     */
+    const summary =
+      created.reduce(
+        (result, payout) => {
+          result.createdCount +=
+            1;
+
+          result.totalGrossSalary +=
+            Number(
+              payout.grossSalary ||
+                0
+            );
+
+          result.totalAdvanceDeducted +=
+            Number(
+              payout.advanceDeducted ||
+                0
+            );
+
+          result.totalOtherDeduction +=
+            Number(
+              payout.deductions ||
+                0
+            );
+
+          result.totalNetSalary +=
+            Number(
+              payout.netSalary ||
+                0
+            );
+
+          return result;
+        },
+        {
+          createdCount: 0,
+
+          failedCount:
+            failed.length,
+
+          totalGrossSalary: 0,
+
+          totalAdvanceDeducted: 0,
+
+          totalOtherDeduction: 0,
+
+          totalNetSalary: 0,
+        }
+      );
+
+    summary.totalGrossSalary =
+      roundCurrency(
+        summary.totalGrossSalary
+      );
+
+    summary.totalAdvanceDeducted =
+      roundCurrency(
+        summary.totalAdvanceDeducted
+      );
+
+    summary.totalOtherDeduction =
+      roundCurrency(
+        summary.totalOtherDeduction
+      );
+
+    summary.totalNetSalary =
+      roundCurrency(
+        summary.totalNetSalary
+      );
+
+    const responseBody = {
+      message:
+        failed.length === 0
+          ? 'All selected payouts were created successfully.'
+          : `${created.length} payout(s) created and ${failed.length} payout(s) failed.`,
+
+      created,
+
+      failed,
+
+      summary,
+    };
+
+    /*
+     * 201 = everything succeeded.
+     * 207 = partial success.
+     *
+     * Axios treats both as successful HTTP
+     * responses because both are 2xx statuses.
+     */
+    return res
+      .status(
+        failed.length > 0
+          ? 207
+          : 201
+      )
+      .json(responseBody);
+  } catch (err) {
+    console.error(
+      'BULK PAYOUT ERROR:',
+      err
+    );
+
+    return res.status(500).json({
+      message:
+        err.message ||
+        'Failed to create bulk payouts.',
     });
   }
 });
