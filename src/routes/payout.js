@@ -1555,7 +1555,7 @@ router.post('/register', async (req, res) => {
           // Calculate lifetime advance status in the database.
           advance: {
             totalAdvanceTaken: { $sum: '$attendanceRecords.advancePayment' },
-            advanceRecovered: { $sum: '$payoutRecords.advaDeducted' } // Corrected field name
+            advanceRecovered: { $sum: '$payoutRecords.advanceDeducted' } // Corrected field name
           }
         }
       }
