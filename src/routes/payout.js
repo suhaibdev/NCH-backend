@@ -5,7 +5,7 @@ const { startOfDay, endOfDay } = require('date-fns');
 const mongoose = require('mongoose');
 const Employee = require('../models/Employee');
 const Attendance = require('../models/Attendance');
-
+const PayoutCounter = require('../models/PayoutCounter');
 // ===============================================
 // CONSTANTS
 // ===============================================
@@ -199,11 +199,36 @@ const findOverlappingPayout = (
 /**
  * Salary slip number generator.
  */
-const generateSalarySlipNumber = () => {
-  return `SAL-${new Date().getFullYear()}-${Date.now()}-${Math.random()
-    .toString(36)
-    .substring(2, 6)
-    .toUpperCase()}`;
+const generatePayoutNumber = async (session = null) => {
+  const year = new Date().getFullYear();
+
+  const options = {
+    new: true,
+    upsert: true,
+    setDefaultsOnInsert: true,
+  };
+
+  if (session) {
+    options.session = session;
+  }
+
+  const counter = await PayoutCounter.findOneAndUpdate(
+    {
+      _id: `payout-${year}`,
+    },
+    {
+      $inc: {
+        sequence: 1,
+      },
+    },
+    options
+  );
+
+  const sequence = String(
+    counter.sequence
+  ).padStart(4, "0");
+
+  return `NCH-PAY-${year}-${sequence}`;
 };
 
 // ===============================================
@@ -1090,7 +1115,7 @@ router.post('/bulk', async (req, res) => {
               false,
 
             salarySlipNumber:
-              generateSalarySlipNumber(),
+              await generatePayoutNumber(session),
           });
 
         const saved =
@@ -1432,7 +1457,7 @@ router.post('/', async (req, res) => {
       // Hardcoded for now, but with a clear TODO. Never trust client-provided security-sensitive data.
       generatedBy: "Admin", // TODO: Replace with authenticated user (req.user.id)
       // Improved uniqueness for salary slip numbers to prevent collisions.
-      salarySlipNumber: `SAL-${new Date().getFullYear()}-${Date.now()}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`,
+      salarySlipNumber: await generatePayoutNumber(session),
     });
 
       // `save()` returns a single document, not an array.
