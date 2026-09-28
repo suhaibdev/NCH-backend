@@ -1031,6 +1031,173 @@ router.get(
   }
 );
 
+/* ==========================================================
+   GET ALL STOCK ITEMS
+
+   GET /api/stock
+
+   Optional:
+   ?category=raw_material
+   ?stockType=STOCK_TYPE_ID
+   ?search=label
+========================================================== */
+
+router.get(
+  "/",
+  async (req, res) => {
+    try {
+      const {
+        category,
+        stockType,
+        search,
+      } = req.query;
+
+      const query = {};
+
+
+      /* ------------------------------
+         MAIN CATEGORY FILTER
+      ------------------------------ */
+
+      if (category) {
+        if (
+          !VALID_CATEGORIES.includes(
+            category
+          )
+        ) {
+          return res
+            .status(400)
+            .json({
+              message:
+                "Invalid stock category.",
+            });
+        }
+
+        query.category =
+          category;
+      }
+
+
+      /* ------------------------------
+         STOCK TYPE FILTER
+
+         Used by dedicated pages such as:
+         Label
+         Wrapper
+         Cotton
+      ------------------------------ */
+
+      if (stockType) {
+        if (
+          !mongoose.Types.ObjectId.isValid(
+            stockType
+          )
+        ) {
+          return res
+            .status(400)
+            .json({
+              message:
+                "Invalid Stock Type ID.",
+            });
+        }
+
+        query.stockType =
+          stockType;
+      }
+
+
+      /* ------------------------------
+         GLOBAL SEARCH
+
+         Searches:
+         1. Product name
+         2. Stock Type name
+
+         No category is required,
+         so it can search ALL stock.
+      ------------------------------ */
+
+      if (
+        search &&
+        search.trim()
+      ) {
+        const searchText =
+          search.trim();
+
+        const searchRegex = {
+          $regex:
+            escapeRegex(
+              searchText
+            ),
+          $options: "i",
+        };
+
+        const matchingTypes =
+          await StockType.find({
+            name: searchRegex,
+          })
+            .select("_id")
+            .lean();
+
+        const matchingTypeIds =
+          matchingTypes.map(
+            (type) =>
+              type._id
+          );
+
+        query.$or = [
+          {
+            productName:
+              searchRegex,
+          },
+        ];
+
+        if (
+          matchingTypeIds.length >
+          0
+        ) {
+          query.$or.push({
+            stockType: {
+              $in:
+                matchingTypeIds,
+            },
+          });
+        }
+      }
+
+
+      const items =
+        await StockItem.find(
+          query
+        )
+          .populate(
+            "stockType",
+            "name category notes"
+          )
+          .sort({
+            productName: 1,
+          });
+
+
+      return res.json(
+        items
+      );
+    } catch (err) {
+      console.error(
+        "GET STOCK ERROR:",
+        err
+      );
+
+      return res
+        .status(500)
+        .json({
+          message:
+            "Unable to load stock items.",
+        });
+    }
+  }
+);
+
 
 /* ==========================================================
    CREATE STOCK ITEM
@@ -1330,6 +1497,7 @@ router.put(
         productName,
         category,
         unit,
+        stockType,
         minimumStock,
         notes,
       } = req.body;
