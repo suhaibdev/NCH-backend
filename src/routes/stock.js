@@ -7,6 +7,7 @@ const StockItem = require("../models/StockItem");
 const StockMovement = require("../models/StockMovement");
 const StockType = require("../models/StockType");
 
+
 /* ==========================================================
    CONSTANTS
 ========================================================== */
@@ -28,17 +29,24 @@ const VALID_UNITS = [
 ========================================================== */
 
 const escapeRegex = (value = "") => {
-  return value.replace(
+  return String(value).replace(
     /[.*+?^${}()|[\]\\]/g,
     "\\$&"
   );
 };
 
 
-const cleanProductName = (value = "") => {
+const cleanText = (value = "") => {
   return String(value)
     .trim()
     .replace(/\s+/g, " ");
+};
+
+
+const cleanProductName = (
+  value = ""
+) => {
+  return cleanText(value);
 };
 
 
@@ -50,21 +58,34 @@ const parseWholeNumber = (
     allowZero = true,
   } = {}
 ) => {
-  const number = Number(value);
+  const number =
+    Number(value);
 
-  if (!Number.isInteger(number)) {
+  if (
+    !Number.isInteger(
+      number
+    )
+  ) {
     return {
       valid: false,
-      message: `${fieldName} must be a whole number.`,
+
+      message:
+        `${fieldName} must be a whole number.`,
     };
   }
 
-  if (number < min) {
+
+  if (
+    number < min
+  ) {
     return {
       valid: false,
-      message: `${fieldName} cannot be less than ${min}.`,
+
+      message:
+        `${fieldName} cannot be less than ${min}.`,
     };
   }
+
 
   if (
     !allowZero &&
@@ -72,9 +93,12 @@ const parseWholeNumber = (
   ) {
     return {
       valid: false,
-      message: `${fieldName} must be greater than 0.`,
+
+      message:
+        `${fieldName} must be greater than 0.`,
     };
   }
+
 
   return {
     valid: true,
@@ -83,35 +107,57 @@ const parseWholeNumber = (
 };
 
 
-const findDuplicateProduct = async (
-  productName,
-  excludeId = null,
-  session = null
-) => {
-  const query = {
-    productName: {
-      $regex: `^${escapeRegex(
-        productName
-      )}$`,
-      $options: "i",
-    },
+const findDuplicateProduct =
+  async (
+    productName,
+    excludeId = null,
+    session = null
+  ) => {
+    const query = {
+      productName: {
+        $regex:
+          `^${escapeRegex(
+            productName
+          )}$`,
+
+        $options: "i",
+      },
+    };
+
+
+    if (excludeId) {
+      query._id = {
+        $ne:
+          excludeId,
+      };
+    }
+
+
+    let request =
+      StockItem.findOne(
+        query
+      );
+
+
+    if (session) {
+      request =
+        request.session(
+          session
+        );
+    }
+
+
+    return request;
   };
 
-  if (excludeId) {
-    query._id = {
-      $ne: excludeId,
-    };
-  }
 
-  let request =
-    StockItem.findOne(query);
-
-  if (session) {
-    request =
-      request.session(session);
-  }
-
-  return request;
+const getLowStockValue = (
+  item
+) => {
+  return (
+    item.currentStock <=
+    item.minimumStock
+  );
 };
 
 
@@ -137,7 +183,9 @@ router.get(
         category,
       } = req.query;
 
+
       const query = {};
+
 
       if (category) {
         if (
@@ -153,9 +201,11 @@ router.get(
             });
         }
 
+
         query.category =
           category;
       }
+
 
       const types =
         await StockType.find(
@@ -167,10 +217,7 @@ router.get(
           })
           .lean();
 
-      /*
-       * Count how many stock products
-       * currently use each Stock Type.
-       */
+
       const productCounts =
         await StockItem.aggregate([
           {
@@ -180,9 +227,12 @@ router.get(
               },
             },
           },
+
           {
             $group: {
-              _id: "$stockType",
+              _id:
+                "$stockType",
+
               productCount: {
                 $sum: 1,
               },
@@ -190,15 +240,20 @@ router.get(
           },
         ]);
 
+
       const countMap =
         new Map(
           productCounts.map(
             (row) => [
-              String(row._id),
+              String(
+                row._id
+              ),
+
               row.productCount,
             ]
           )
         );
+
 
       const result =
         types.map(
@@ -207,17 +262,23 @@ router.get(
 
             productCount:
               countMap.get(
-                String(type._id)
+                String(
+                  type._id
+                )
               ) || 0,
           })
         );
 
-      return res.json(result);
+
+      return res.json(
+        result
+      );
     } catch (err) {
       console.error(
         "GET STOCK TYPES ERROR:",
         err
       );
+
 
       return res
         .status(500)
@@ -234,14 +295,6 @@ router.get(
    CREATE STOCK TYPE
 
    POST /api/stock/types
-
-   Example:
-
-   {
-     "name": "Label",
-     "category": "raw_material",
-     "notes": ""
-   }
 ========================================================== */
 
 router.post(
@@ -254,8 +307,12 @@ router.post(
         notes = "",
       } = req.body;
 
+
       const finalName =
-        cleanProductName(name);
+        cleanText(
+          name
+        );
+
 
       if (!finalName) {
         return res
@@ -265,6 +322,7 @@ router.post(
               "Stock Type name is required.",
           });
       }
+
 
       if (
         !VALID_CATEGORIES.includes(
@@ -279,14 +337,17 @@ router.post(
           });
       }
 
+
       const normalizedName =
         finalName.toLowerCase();
+
 
       const duplicate =
         await StockType.findOne({
           category,
           normalizedName,
         }).lean();
+
 
       if (duplicate) {
         return res
@@ -297,9 +358,11 @@ router.post(
           });
       }
 
+
       const stockType =
         await StockType.create({
-          name: finalName,
+          name:
+            finalName,
 
           normalizedName,
 
@@ -310,6 +373,7 @@ router.post(
               notes || ""
             ).trim(),
         });
+
 
       return res
         .status(201)
@@ -329,8 +393,10 @@ router.post(
         err
       );
 
+
       if (
-        err?.code === 11000
+        err?.code ===
+        11000
       ) {
         return res
           .status(409)
@@ -339,6 +405,7 @@ router.post(
               "This Stock Type already exists in the selected main category.",
           });
       }
+
 
       return res
         .status(500)
@@ -356,11 +423,6 @@ router.post(
    UPDATE STOCK TYPE
 
    PUT /api/stock/types/:id
-
-   Name and notes can be changed.
-
-   Main category can only change when
-   no products currently use this type.
 ========================================================== */
 
 router.put(
@@ -370,6 +432,7 @@ router.put(
       const {
         id,
       } = req.params;
+
 
       if (
         !mongoose.Types.ObjectId.isValid(
@@ -384,10 +447,12 @@ router.put(
           });
       }
 
+
       const stockType =
         await StockType.findById(
           id
         );
+
 
       if (!stockType) {
         return res
@@ -398,30 +463,31 @@ router.put(
           });
       }
 
+
       const {
         name,
         category,
         notes,
       } = req.body;
 
+
       let nextName =
         stockType.name;
+
 
       let nextCategory =
         stockType.category;
 
 
-      /* ------------------------------
-         NAME
-      ------------------------------ */
-
       if (
-        name !== undefined
+        name !==
+        undefined
       ) {
         nextName =
-          cleanProductName(
+          cleanText(
             name
           );
+
 
         if (!nextName) {
           return res
@@ -434,12 +500,9 @@ router.put(
       }
 
 
-      /* ------------------------------
-         CATEGORY
-      ------------------------------ */
-
       if (
-        category !== undefined
+        category !==
+        undefined
       ) {
         if (
           !VALID_CATEGORIES.includes(
@@ -454,6 +517,7 @@ router.put(
             });
         }
 
+
         if (
           category !==
           stockType.category
@@ -464,15 +528,18 @@ router.put(
                 stockType._id,
             });
 
+
           if (
-            productCount > 0
+            productCount >
+            0
           ) {
             return res
               .status(400)
               .json({
                 message:
                   `Main category cannot be changed because ${productCount} product${
-                    productCount === 1
+                    productCount ===
+                    1
                       ? ""
                       : "s"
                   } currently use this Stock Type.`,
@@ -480,17 +547,15 @@ router.put(
           }
         }
 
+
         nextCategory =
           category;
       }
 
 
-      /* ------------------------------
-         DUPLICATE CHECK
-      ------------------------------ */
-
       const normalizedName =
         nextName.toLowerCase();
+
 
       const duplicate =
         await StockType.findOne({
@@ -505,6 +570,7 @@ router.put(
           normalizedName,
         }).lean();
 
+
       if (duplicate) {
         return res
           .status(409)
@@ -515,10 +581,6 @@ router.put(
       }
 
 
-      /* ------------------------------
-         SAVE
-      ------------------------------ */
-
       stockType.name =
         nextName;
 
@@ -528,8 +590,10 @@ router.put(
       stockType.category =
         nextCategory;
 
+
       if (
-        notes !== undefined
+        notes !==
+        undefined
       ) {
         stockType.notes =
           String(
@@ -537,13 +601,16 @@ router.put(
           ).trim();
       }
 
+
       await stockType.save();
+
 
       const productCount =
         await StockItem.countDocuments({
           stockType:
             stockType._id,
         });
+
 
       return res.json({
         message:
@@ -561,8 +628,10 @@ router.put(
         err
       );
 
+
       if (
-        err?.code === 11000
+        err?.code ===
+        11000
       ) {
         return res
           .status(409)
@@ -571,6 +640,7 @@ router.put(
               "This Stock Type already exists in the selected main category.",
           });
       }
+
 
       return res
         .status(500)
@@ -588,9 +658,6 @@ router.put(
    DELETE STOCK TYPE
 
    DELETE /api/stock/types/:id
-
-   Deletion is blocked when any stock
-   product still uses this Stock Type.
 ========================================================== */
 
 router.delete(
@@ -600,6 +667,7 @@ router.delete(
       const {
         id,
       } = req.params;
+
 
       if (
         !mongoose.Types.ObjectId.isValid(
@@ -614,10 +682,12 @@ router.delete(
           });
       }
 
+
       const stockType =
         await StockType.findById(
           id
         );
+
 
       if (!stockType) {
         return res
@@ -628,31 +698,37 @@ router.delete(
           });
       }
 
+
       const productCount =
         await StockItem.countDocuments({
           stockType:
             stockType._id,
         });
 
+
       if (
-        productCount > 0
+        productCount >
+        0
       ) {
         return res
           .status(400)
           .json({
             message:
               `Cannot delete "${stockType.name}". ${productCount} product${
-                productCount === 1
+                productCount ===
+                1
                   ? " is"
                   : "s are"
               } using this Stock Type. Move those products to another Stock Type first.`,
           });
       }
 
+
       await StockType.deleteOne({
         _id:
           stockType._id,
       });
+
 
       return res.json({
         message:
@@ -663,6 +739,7 @@ router.delete(
         "DELETE STOCK TYPE ERROR:",
         err
       );
+
 
       return res
         .status(500)
@@ -688,10 +765,6 @@ router.get(
     try {
       const items =
         await StockItem.find({
-          minimumStock: {
-            $gt: 0,
-          },
-
           $expr: {
             $lte: [
               "$currentStock",
@@ -699,16 +772,20 @@ router.get(
             ],
           },
         })
+          .populate(
+            "stockType",
+            "name category"
+          )
           .sort({
             currentStock: 1,
             productName: 1,
-          })
-          .lean({
-            virtuals: true,
           });
 
+
       return res.json({
-        count: items.length,
+        count:
+          items.length,
+
         items,
       });
     } catch (err) {
@@ -716,6 +793,7 @@ router.get(
         "GET LOW STOCK ERROR:",
         err
       );
+
 
       return res
         .status(500)
@@ -733,7 +811,7 @@ router.get(
 
    GET /api/stock/history
 
-   Optional query:
+   Optional:
    ?itemId=
    ?movementType=
    ?startDate=
@@ -751,7 +829,9 @@ router.get(
         endDate,
       } = req.query;
 
+
       const query = {};
+
 
       if (itemId) {
         if (
@@ -767,23 +847,34 @@ router.get(
             });
         }
 
-        query.item = itemId;
+
+        query.item =
+          itemId;
       }
 
-      if (movementType) {
+
+      if (
+        movementType
+      ) {
         query.movementType =
           movementType;
       }
+
 
       if (
         startDate ||
         endDate
       ) {
-        query.movementDate = {};
+        query.movementDate =
+          {};
+
 
         if (startDate) {
           const start =
-            new Date(startDate);
+            new Date(
+              startDate
+            );
+
 
           if (
             Number.isNaN(
@@ -798,6 +889,7 @@ router.get(
               });
           }
 
+
           start.setHours(
             0,
             0,
@@ -805,13 +897,18 @@ router.get(
             0
           );
 
+
           query.movementDate.$gte =
             start;
         }
 
+
         if (endDate) {
           const end =
-            new Date(endDate);
+            new Date(
+              endDate
+            );
+
 
           if (
             Number.isNaN(
@@ -826,6 +923,7 @@ router.get(
               });
           }
 
+
           end.setHours(
             23,
             59,
@@ -833,10 +931,12 @@ router.get(
             999
           );
 
+
           query.movementDate.$lte =
             end;
         }
       }
+
 
       const history =
         await StockMovement.find(
@@ -844,7 +944,7 @@ router.get(
         )
           .populate(
             "item",
-            "productName category unit currentStock minimumStock"
+            "productName category stockType unit currentStock minimumStock"
           )
           .sort({
             movementDate: -1,
@@ -853,12 +953,16 @@ router.get(
           .limit(500)
           .lean();
 
-      return res.json(history);
+
+      return res.json(
+        history
+      );
     } catch (err) {
       console.error(
         "GET STOCK HISTORY ERROR:",
         err
       );
+
 
       return res
         .status(500)
@@ -885,6 +989,7 @@ router.get(
         await StockItem.find()
           .lean();
 
+
       const summary = {
         totalItems:
           items.length,
@@ -898,6 +1003,7 @@ router.get(
         lowStock: 0,
       };
 
+
       items.forEach(
         (item) => {
           if (
@@ -908,6 +1014,7 @@ router.get(
               1;
           }
 
+
           if (
             item.category ===
             "washed_raw_material"
@@ -915,6 +1022,7 @@ router.get(
             summary.washedRawMaterial +=
               1;
           }
+
 
           if (
             item.category ===
@@ -924,10 +1032,10 @@ router.get(
               1;
           }
 
+
           if (
-            item.minimumStock > 0 &&
             item.currentStock <=
-              item.minimumStock
+            item.minimumStock
           ) {
             summary.lowStock +=
               1;
@@ -935,12 +1043,16 @@ router.get(
         }
       );
 
-      return res.json(summary);
+
+      return res.json(
+        summary
+      );
     } catch (err) {
       console.error(
         "GET STOCK SUMMARY ERROR:",
         err
       );
+
 
       return res
         .status(500)
@@ -951,7 +1063,6 @@ router.get(
     }
   }
 );
-
 
 
 /* ==========================================================
@@ -975,6 +1086,7 @@ router.get(
         search,
       } = req.query;
 
+
       const query = {};
 
 
@@ -996,6 +1108,7 @@ router.get(
             });
         }
 
+
         query.category =
           category;
       }
@@ -1004,10 +1117,9 @@ router.get(
       /* ------------------------------
          STOCK TYPE FILTER
 
-         Used by dedicated pages such as:
-         Label
-         Wrapper
-         Cotton
+         This is what makes dedicated
+         Label / Wrapper / Cotton pages
+         show only their own products.
       ------------------------------ */
 
       if (stockType) {
@@ -1024,20 +1136,39 @@ router.get(
             });
         }
 
+
+        const typeExists =
+          await StockType.exists({
+            _id:
+              stockType,
+          });
+
+
+        if (!typeExists) {
+          return res
+            .status(404)
+            .json({
+              message:
+                "Stock Type not found.",
+            });
+        }
+
+
         query.stockType =
           stockType;
       }
 
 
       /* ------------------------------
-         GLOBAL SEARCH
+         SEARCH
 
-         Searches:
-         1. Product name
-         2. Stock Type name
+         Dedicated Stock Type page:
+         search product names only
+         inside selected Stock Type.
 
-         No category is required,
-         so it can search ALL stock.
+         Global page:
+         search product name and
+         Stock Type name.
       ------------------------------ */
 
       if (
@@ -1047,44 +1178,50 @@ router.get(
         const searchText =
           search.trim();
 
+
         const searchRegex = {
           $regex:
             escapeRegex(
               searchText
             ),
+
           $options: "i",
         };
 
-        const matchingTypes =
-          await StockType.find({
-            name: searchRegex,
-          })
-            .select("_id")
-            .lean();
 
-        const matchingTypeIds =
-          matchingTypes.map(
-            (type) =>
-              type._id
-          );
+        if (stockType) {
+          query.productName =
+            searchRegex;
+        } else {
+          const matchingTypes =
+            await StockType.find({
+              name:
+                searchRegex,
+            })
+              .select("_id")
+              .lean();
 
-        query.$or = [
-          {
-            productName:
-              searchRegex,
-          },
-        ];
 
-        if (
-          matchingTypeIds.length >
-          0
-        ) {
-          query.$or.push({
-            stockType: {
-              $in:
-                matchingTypeIds,
+          const matchingTypeIds =
+            matchingTypes.map(
+              (type) =>
+                type._id
+            );
+
+
+          query.$or = [
+            {
+              productName:
+                searchRegex,
             },
-          });
+
+            {
+              stockType: {
+                $in:
+                  matchingTypeIds,
+              },
+            },
+          ];
         }
       }
 
@@ -1111,6 +1248,7 @@ router.get(
         err
       );
 
+
       return res
         .status(500)
         .json({
@@ -1126,23 +1264,14 @@ router.get(
    CREATE STOCK ITEM
 
    POST /api/stock
-
-   Body example:
-
-   {
-     "productName": "ABC Cotton Bandage 10cm",
-     "category": "raw_material",
-     "unit": "pcs",
-     "openingStock": 20,
-     "minimumStock": 5,
-     "notes": ""
-   }
 ========================================================== */
 
 router.post(
   "/",
   async (req, res) => {
-    let session = null;
+    let session =
+      null;
+
 
     try {
       const {
@@ -1155,10 +1284,12 @@ router.post(
         notes = "",
       } = req.body;
 
+
       const finalName =
         cleanProductName(
           productName
         );
+
 
       if (!finalName) {
         return res
@@ -1168,6 +1299,7 @@ router.post(
               "Product name is required.",
           });
       }
+
 
       if (
         !VALID_CATEGORIES.includes(
@@ -1182,6 +1314,7 @@ router.post(
           });
       }
 
+
       if (
         !VALID_UNITS.includes(
           unit
@@ -1195,59 +1328,68 @@ router.post(
           });
       }
 
+
       /* ------------------------------
-   VALIDATE STOCK TYPE
------------------------------- */
+         VALIDATE STOCK TYPE
+      ------------------------------ */
 
-let selectedStockType =
-  null;
+      let selectedStockType =
+        null;
 
-if (stockType) {
-  if (
-    !mongoose.Types.ObjectId.isValid(
-      stockType
-    )
-  ) {
-    return res
-      .status(400)
-      .json({
-        message:
-          "Invalid Stock Type ID.",
-      });
-  }
 
-  selectedStockType =
-    await StockType.findById(
-      stockType
-    ).lean();
+      if (stockType) {
+        if (
+          !mongoose.Types.ObjectId.isValid(
+            stockType
+          )
+        ) {
+          return res
+            .status(400)
+            .json({
+              message:
+                "Invalid Stock Type ID.",
+            });
+        }
 
-  if (!selectedStockType) {
-    return res
-      .status(404)
-      .json({
-        message:
-          "Stock Type not found.",
-      });
-  }
 
-  if (
-    selectedStockType.category !==
-    category
-  ) {
-    return res
-      .status(400)
-      .json({
-        message:
-          `"${selectedStockType.name}" belongs to a different main stock category.`,
-      });
-  }
-}
+        selectedStockType =
+          await StockType.findById(
+            stockType
+          ).lean();
+
+
+        if (
+          !selectedStockType
+        ) {
+          return res
+            .status(404)
+            .json({
+              message:
+                "Stock Type not found.",
+            });
+        }
+
+
+        if (
+          selectedStockType.category !==
+          category
+        ) {
+          return res
+            .status(400)
+            .json({
+              message:
+                `"${selectedStockType.name}" belongs to a different main stock category.`,
+            });
+        }
+      }
+
 
       const openingCheck =
         parseWholeNumber(
           openingStock,
           "Opening stock"
         );
+
 
       if (
         !openingCheck.valid
@@ -1260,11 +1402,13 @@ if (stockType) {
           });
       }
 
+
       const minimumCheck =
         parseWholeNumber(
           minimumStock,
           "Minimum stock"
         );
+
 
       if (
         !minimumCheck.valid
@@ -1277,10 +1421,13 @@ if (stockType) {
           });
       }
 
+
       session =
         await mongoose.startSession();
 
+
       session.startTransaction();
+
 
       const duplicate =
         await findDuplicateProduct(
@@ -1289,8 +1436,10 @@ if (stockType) {
           session
         );
 
+
       if (duplicate) {
         await session.abortTransaction();
+
 
         return res
           .status(409)
@@ -1300,19 +1449,20 @@ if (stockType) {
           });
       }
 
+
       const item =
         new StockItem({
-         productName:
-          finalName,
+          productName:
+            finalName,
 
-        category,
+          category,
 
-        stockType:
-          selectedStockType
-            ? selectedStockType._id
-            : null,
+          stockType:
+            selectedStockType
+              ? selectedStockType._id
+              : null,
 
-        unit,
+          unit,
 
           currentStock:
             openingCheck.value,
@@ -1326,13 +1476,15 @@ if (stockType) {
             ).trim(),
         });
 
+
       await item.save({
         session,
       });
 
+
       /*
-       * Opening stock is also saved
-       * in stock history.
+       * Opening stock must also
+       * create stock history.
        */
       if (
         openingCheck.value >
@@ -1389,7 +1541,18 @@ if (stockType) {
         );
       }
 
+
       await session.commitTransaction();
+
+
+      const createdItem =
+        await StockItem.findById(
+          item._id
+        ).populate(
+          "stockType",
+          "name category notes"
+        );
+
 
       return res
         .status(201)
@@ -1397,7 +1560,8 @@ if (stockType) {
           message:
             "Stock item created successfully.",
 
-          item,
+          item:
+            createdItem,
         });
     } catch (err) {
       if (
@@ -1406,10 +1570,12 @@ if (stockType) {
         await session.abortTransaction();
       }
 
+
       console.error(
         "CREATE STOCK ERROR:",
         err
       );
+
 
       return res
         .status(500)
@@ -1432,7 +1598,7 @@ if (stockType) {
 
    PUT /api/stock/:id
 
-   This DOES NOT directly change stock quantity.
+   Does NOT directly change currentStock.
 ========================================================== */
 
 router.put(
@@ -1442,6 +1608,7 @@ router.put(
       const {
         id,
       } = req.params;
+
 
       if (
         !mongoose.Types.ObjectId.isValid(
@@ -1456,10 +1623,12 @@ router.put(
           });
       }
 
+
       const item =
         await StockItem.findById(
           id
         );
+
 
       if (!item) {
         return res
@@ -1470,14 +1639,20 @@ router.put(
           });
       }
 
+
       const {
         productName,
         category,
-        unit,
         stockType,
+        unit,
         minimumStock,
         notes,
       } = req.body;
+
+
+      /* ------------------------------
+         PRODUCT NAME
+      ------------------------------ */
 
       if (
         productName !==
@@ -1488,6 +1663,7 @@ router.put(
             productName
           );
 
+
         if (!finalName) {
           return res
             .status(400)
@@ -1497,11 +1673,13 @@ router.put(
             });
         }
 
+
         const duplicate =
           await findDuplicateProduct(
             finalName,
             item._id
           );
+
 
         if (duplicate) {
           return res
@@ -1512,9 +1690,15 @@ router.put(
             });
         }
 
+
         item.productName =
           finalName;
       }
+
+
+      /* ------------------------------
+         MINIMUM STOCK
+      ------------------------------ */
 
       if (
         minimumStock !==
@@ -1525,6 +1709,7 @@ router.put(
             minimumStock,
             "Minimum stock"
           );
+
 
         if (
           !minimumCheck.valid
@@ -1537,12 +1722,19 @@ router.put(
             });
         }
 
+
         item.minimumStock =
           minimumCheck.value;
       }
 
+
+      /* ------------------------------
+         NOTES
+      ------------------------------ */
+
       if (
-        notes !== undefined
+        notes !==
+        undefined
       ) {
         item.notes =
           String(
@@ -1550,23 +1742,29 @@ router.put(
           ).trim();
       }
 
-      /*
-       * Category/unit should not be casually
-       * changed after stock movements exist,
-       * because old history would become confusing.
-       */
+
+      /* ======================================================
+         CATEGORY / UNIT
+
+         These cannot be casually changed
+         after stock activity starts.
+      ====================================================== */
+
       if (
         category !== undefined ||
         unit !== undefined
       ) {
         const movementExists =
           await StockMovement.exists({
-            item: item._id,
+            item:
+              item._id,
           });
+
 
         if (
           movementExists ||
-          item.currentStock > 0
+          item.currentStock >
+          0
         ) {
           if (
             category !== undefined &&
@@ -1581,9 +1779,11 @@ router.put(
               });
           }
 
+
           if (
             unit !== undefined &&
-            unit !== item.unit
+            unit !==
+              item.unit
           ) {
             return res
               .status(400)
@@ -1594,8 +1794,10 @@ router.put(
           }
         }
 
+
         if (
-          category !== undefined
+          category !==
+          undefined
         ) {
           if (
             !VALID_CATEGORIES.includes(
@@ -1610,12 +1812,15 @@ router.put(
               });
           }
 
+
           item.category =
             category;
         }
 
+
         if (
-          unit !== undefined
+          unit !==
+          undefined
         ) {
           if (
             !VALID_UNITS.includes(
@@ -1630,119 +1835,146 @@ router.put(
               });
           }
 
-          item.unit = unit;
+
+          item.unit =
+            unit;
         }
       }
 
-      /* ==========================================================
-   STOCK TYPE
 
-   Stock Type may be changed without changing
-   stock quantity or stock movement history.
+      /* ======================================================
+         STOCK TYPE
 
-   Empty/null value means Unassigned.
-========================================================== */
+         Stock Type can be changed without
+         changing stock quantity/history.
 
-if (
-  stockType !== undefined
-) {
-  if (
-    stockType === null ||
-    stockType === ""
-  ) {
-    item.stockType =
-      null;
-  } else {
-    if (
-      !mongoose.Types.ObjectId.isValid(
-        stockType
-      )
-    ) {
-      return res
-        .status(400)
-        .json({
-          message:
-            "Invalid Stock Type ID.",
-        });
-    }
+         null / empty = Unassigned.
+      ====================================================== */
 
-    const selectedStockType =
-      await StockType.findById(
-        stockType
-      ).lean();
-
-    if (
-      !selectedStockType
-    ) {
-      return res
-        .status(404)
-        .json({
-          message:
-            "Stock Type not found.",
-        });
-    }
-
-    if (
-      selectedStockType.category !==
-      item.category
-    ) {
-      return res
-        .status(400)
-        .json({
-          message:
-            `"${selectedStockType.name}" belongs to a different main stock category.`,
-        });
-    }
-
-    item.stockType =
-      selectedStockType._id;
-  }
-}
+      if (
+        stockType !==
+        undefined
+      ) {
+        if (
+          stockType === null ||
+          stockType === ""
+        ) {
+          item.stockType =
+            null;
+        } else {
+          if (
+            !mongoose.Types.ObjectId.isValid(
+              stockType
+            )
+          ) {
+            return res
+              .status(400)
+              .json({
+                message:
+                  "Invalid Stock Type ID.",
+              });
+          }
 
 
-/*
- * Extra safety:
- * If the main category was changed without
- * explicitly selecting a new Stock Type,
- * make sure the existing Stock Type still
- * belongs to that category.
- */
-if (
-  stockType === undefined &&
-  item.stockType
-) {
-  const existingStockType =
-    await StockType.findById(
-      item.stockType
-    ).lean();
+          const selectedStockType =
+            await StockType.findById(
+              stockType
+            ).lean();
 
-  if (
-    existingStockType &&
-    existingStockType.category !==
-      item.category
-  ) {
-    return res
-      .status(400)
-      .json({
-        message:
-          "Please select a Stock Type that belongs to the new main category.",
-      });
-  }
-}
+
+          if (
+            !selectedStockType
+          ) {
+            return res
+              .status(404)
+              .json({
+                message:
+                  "Stock Type not found.",
+              });
+          }
+
+
+          if (
+            selectedStockType.category !==
+            item.category
+          ) {
+            return res
+              .status(400)
+              .json({
+                message:
+                  `"${selectedStockType.name}" belongs to a different main stock category.`,
+              });
+          }
+
+
+          item.stockType =
+            selectedStockType._id;
+        }
+      }
+
+
+      /*
+       * Safety:
+       * If category changed and caller
+       * did not explicitly send stockType,
+       * existing Stock Type must still
+       * belong to that category.
+       */
+      if (
+        stockType ===
+          undefined &&
+        item.stockType
+      ) {
+        const existingStockType =
+          await StockType.findById(
+            item.stockType
+          ).lean();
+
+
+        if (
+          !existingStockType
+        ) {
+          item.stockType =
+            null;
+        } else if (
+          existingStockType.category !==
+          item.category
+        ) {
+          return res
+            .status(400)
+            .json({
+              message:
+                "Please select a Stock Type that belongs to the new main category.",
+            });
+        }
+      }
+
 
       await item.save();
+
+
+      const updatedItem =
+        await StockItem.findById(
+          item._id
+        ).populate(
+          "stockType",
+          "name category notes"
+        );
+
 
       return res.json({
         message:
           "Stock item updated successfully.",
 
-        item,
+        item:
+          updatedItem,
       });
     } catch (err) {
       console.error(
         "UPDATE STOCK ITEM ERROR:",
         err
       );
+
 
       return res
         .status(500)
@@ -1760,23 +1992,20 @@ if (
    STOCK IN
 
    POST /api/stock/:id/in
-
-   {
-      "quantity": 10,
-      "reason": "Received stock",
-      "notes": ""
-   }
 ========================================================== */
 
 router.post(
   "/:id/in",
   async (req, res) => {
-    let session = null;
+    let session =
+      null;
+
 
     try {
       const {
         id,
       } = req.params;
+
 
       if (
         !mongoose.Types.ObjectId.isValid(
@@ -1791,6 +2020,7 @@ router.post(
           });
       }
 
+
       const quantityCheck =
         parseWholeNumber(
           req.body.quantity,
@@ -1800,6 +2030,7 @@ router.post(
             allowZero: false,
           }
         );
+
 
       if (
         !quantityCheck.valid
@@ -1812,22 +2043,28 @@ router.post(
           });
       }
 
+
       session =
         await mongoose.startSession();
 
+
       session.startTransaction();
+
 
       const updatedItem =
         await StockItem.findOneAndUpdate(
           {
-            _id: id,
+            _id:
+              id,
           },
+
           {
             $inc: {
               currentStock:
                 quantityCheck.value,
             },
           },
+
           {
             new: true,
             session,
@@ -1835,8 +2072,12 @@ router.post(
           }
         );
 
-      if (!updatedItem) {
+
+      if (
+        !updatedItem
+      ) {
         await session.abortTransaction();
+
 
         return res
           .status(404)
@@ -1846,12 +2087,15 @@ router.post(
           });
       }
 
+
       const balanceAfter =
         updatedItem.currentStock;
+
 
       const balanceBefore =
         balanceAfter -
         quantityCheck.value;
+
 
       await StockMovement.create(
         [
@@ -1908,20 +2152,30 @@ router.post(
         }
       );
 
+
       await session.commitTransaction();
+
+
+      const itemForResponse =
+        await StockItem.findById(
+          updatedItem._id
+        ).populate(
+          "stockType",
+          "name category notes"
+        );
+
 
       return res.json({
         message:
           `Stock added successfully. Current stock: ${updatedItem.currentStock} ${updatedItem.unit}.`,
 
         item:
-          updatedItem,
+          itemForResponse,
 
         lowStock:
-          updatedItem.minimumStock >
-            0 &&
-          updatedItem.currentStock <=
-            updatedItem.minimumStock,
+          getLowStockValue(
+            updatedItem
+          ),
       });
     } catch (err) {
       if (
@@ -1930,10 +2184,12 @@ router.post(
         await session.abortTransaction();
       }
 
+
       console.error(
         "STOCK IN ERROR:",
         err
       );
+
 
       return res
         .status(500)
@@ -1962,12 +2218,15 @@ router.post(
 router.post(
   "/:id/out",
   async (req, res) => {
-    let session = null;
+    let session =
+      null;
+
 
     try {
       const {
         id,
       } = req.params;
+
 
       if (
         !mongoose.Types.ObjectId.isValid(
@@ -1982,6 +2241,7 @@ router.post(
           });
       }
 
+
       const quantityCheck =
         parseWholeNumber(
           req.body.quantity,
@@ -1991,6 +2251,7 @@ router.post(
             allowZero: false,
           }
         );
+
 
       if (
         !quantityCheck.valid
@@ -2003,32 +2264,38 @@ router.post(
           });
       }
 
+
       session =
         await mongoose.startSession();
 
+
       session.startTransaction();
 
+
       /*
-       * The currentStock condition makes this
-       * safe even if two requests happen close
-       * together.
+       * currentStock condition prevents
+       * stock from going negative even if
+       * two requests happen close together.
        */
       const updatedItem =
         await StockItem.findOneAndUpdate(
           {
-            _id: id,
+            _id:
+              id,
 
             currentStock: {
               $gte:
                 quantityCheck.value,
             },
           },
+
           {
             $inc: {
               currentStock:
                 -quantityCheck.value,
             },
           },
+
           {
             new: true,
             session,
@@ -2036,17 +2303,26 @@ router.post(
           }
         );
 
-      if (!updatedItem) {
+
+      if (
+        !updatedItem
+      ) {
         const existingItem =
           await StockItem.findById(
             id
           )
-            .session(session)
+            .session(
+              session
+            )
             .lean();
+
 
         await session.abortTransaction();
 
-        if (!existingItem) {
+
+        if (
+          !existingItem
+        ) {
           return res
             .status(404)
             .json({
@@ -2054,6 +2330,7 @@ router.post(
                 "Stock item not found.",
             });
         }
+
 
         return res
           .status(400)
@@ -2064,8 +2341,9 @@ router.post(
             shortage:
               Math.max(
                 0,
+
                 quantityCheck.value -
-                  existingItem.currentStock
+                existingItem.currentStock
               ),
 
             available:
@@ -2079,12 +2357,15 @@ router.post(
           });
       }
 
+
       const balanceAfter =
         updatedItem.currentStock;
+
 
       const balanceBefore =
         balanceAfter +
         quantityCheck.value;
+
 
       await StockMovement.create(
         [
@@ -2141,13 +2422,24 @@ router.post(
         }
       );
 
+
       await session.commitTransaction();
 
+
       const lowStock =
-        updatedItem.minimumStock >
-          0 &&
-        updatedItem.currentStock <=
-          updatedItem.minimumStock;
+        getLowStockValue(
+          updatedItem
+        );
+
+
+      const itemForResponse =
+        await StockItem.findById(
+          updatedItem._id
+        ).populate(
+          "stockType",
+          "name category notes"
+        );
+
 
       return res.json({
         message:
@@ -2156,7 +2448,7 @@ router.post(
             : `Stock removed successfully. Current stock: ${updatedItem.currentStock} ${updatedItem.unit}.`,
 
         item:
-          updatedItem,
+          itemForResponse,
 
         lowStock,
       });
@@ -2167,10 +2459,12 @@ router.post(
         await session.abortTransaction();
       }
 
+
       console.error(
         "STOCK OUT ERROR:",
         err
       );
+
 
       return res
         .status(500)
@@ -2202,6 +2496,7 @@ router.get(
         id,
       } = req.params;
 
+
       if (
         !mongoose.Types.ObjectId.isValid(
           id
@@ -2215,10 +2510,17 @@ router.get(
           });
       }
 
+
       const item =
         await StockItem.findById(
           id
-        ).lean();
+        )
+          .populate(
+            "stockType",
+            "name category notes"
+          )
+          .lean();
+
 
       if (!item) {
         return res
@@ -2229,15 +2531,18 @@ router.get(
           });
       }
 
+
       const history =
         await StockMovement.find({
-          item: id,
+          item:
+            id,
         })
           .sort({
             movementDate: -1,
             createdAt: -1,
           })
           .lean();
+
 
       return res.json({
         item,
@@ -2248,6 +2553,7 @@ router.get(
         "GET ITEM HISTORY ERROR:",
         err
       );
+
 
       return res
         .status(500)
