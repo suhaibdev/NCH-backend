@@ -1225,6 +1225,7 @@ router.post(
       const {
         productName,
         category,
+        stockType = null,
         unit,
         openingStock = 0,
         minimumStock = 0,
@@ -1270,6 +1271,54 @@ router.post(
               "Unit must be PCS or Dozen.",
           });
       }
+
+      /* ------------------------------
+   VALIDATE STOCK TYPE
+------------------------------ */
+
+let selectedStockType =
+  null;
+
+if (stockType) {
+  if (
+    !mongoose.Types.ObjectId.isValid(
+      stockType
+    )
+  ) {
+    return res
+      .status(400)
+      .json({
+        message:
+          "Invalid Stock Type ID.",
+      });
+  }
+
+  selectedStockType =
+    await StockType.findById(
+      stockType
+    ).lean();
+
+  if (!selectedStockType) {
+    return res
+      .status(404)
+      .json({
+        message:
+          "Stock Type not found.",
+      });
+  }
+
+  if (
+    selectedStockType.category !==
+    category
+  ) {
+    return res
+      .status(400)
+      .json({
+        message:
+          `"${selectedStockType.name}" belongs to a different main stock category.`,
+      });
+  }
+}
 
       const openingCheck =
         parseWholeNumber(
@@ -1330,12 +1379,17 @@ router.post(
 
       const item =
         new StockItem({
-          productName:
-            finalName,
+         productName:
+          finalName,
 
-          category,
+        category,
 
-          unit,
+        stockType:
+          selectedStockType
+            ? selectedStockType._id
+            : null,
+
+        unit,
 
           currentStock:
             openingCheck.value,
@@ -1497,7 +1551,6 @@ router.put(
         productName,
         category,
         unit,
-        stockType,
         minimumStock,
         notes,
       } = req.body;
@@ -1656,6 +1709,102 @@ router.put(
           item.unit = unit;
         }
       }
+
+      /* ==========================================================
+   STOCK TYPE
+
+   Stock Type may be changed without changing
+   stock quantity or stock movement history.
+
+   Empty/null value means Unassigned.
+========================================================== */
+
+if (
+  stockType !== undefined
+) {
+  if (
+    stockType === null ||
+    stockType === ""
+  ) {
+    item.stockType =
+      null;
+  } else {
+    if (
+      !mongoose.Types.ObjectId.isValid(
+        stockType
+      )
+    ) {
+      return res
+        .status(400)
+        .json({
+          message:
+            "Invalid Stock Type ID.",
+        });
+    }
+
+    const selectedStockType =
+      await StockType.findById(
+        stockType
+      ).lean();
+
+    if (
+      !selectedStockType
+    ) {
+      return res
+        .status(404)
+        .json({
+          message:
+            "Stock Type not found.",
+        });
+    }
+
+    if (
+      selectedStockType.category !==
+      item.category
+    ) {
+      return res
+        .status(400)
+        .json({
+          message:
+            `"${selectedStockType.name}" belongs to a different main stock category.`,
+        });
+    }
+
+    item.stockType =
+      selectedStockType._id;
+  }
+}
+
+
+/*
+ * Extra safety:
+ * If the main category was changed without
+ * explicitly selecting a new Stock Type,
+ * make sure the existing Stock Type still
+ * belongs to that category.
+ */
+if (
+  stockType === undefined &&
+  item.stockType
+) {
+  const existingStockType =
+    await StockType.findById(
+      item.stockType
+    ).lean();
+
+  if (
+    existingStockType &&
+    existingStockType.category !==
+      item.category
+  ) {
+    return res
+      .status(400)
+      .json({
+        message:
+          "Please select a Stock Type that belongs to the new main category.",
+      });
+  }
+}
 
       await item.save();
 
