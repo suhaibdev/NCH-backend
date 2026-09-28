@@ -24,6 +24,12 @@ const stockItemSchema = new mongoose.Schema(
       ],
     },
 
+    stockType: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "StockType",
+      default: null,
+    },
+
     unit: {
       type: String,
       required: true,

@@ -5,7 +5,7 @@ const router = express.Router();
 
 const StockItem = require("../models/StockItem");
 const StockMovement = require("../models/StockMovement");
-
+const StockType = require("../models/StockType");
 
 /* ==========================================================
    CONSTANTS
@@ -113,6 +113,567 @@ const findDuplicateProduct = async (
 
   return request;
 };
+
+
+/* ==========================================================
+   STOCK TYPES
+========================================================== */
+
+
+/* ==========================================================
+   GET ALL STOCK TYPES
+
+   GET /api/stock/types
+
+   Optional:
+   ?category=raw_material
+========================================================== */
+
+router.get(
+  "/types",
+  async (req, res) => {
+    try {
+      const {
+        category,
+      } = req.query;
+
+      const query = {};
+
+      if (category) {
+        if (
+          !VALID_CATEGORIES.includes(
+            category
+          )
+        ) {
+          return res
+            .status(400)
+            .json({
+              message:
+                "Invalid main stock category.",
+            });
+        }
+
+        query.category =
+          category;
+      }
+
+      const types =
+        await StockType.find(
+          query
+        )
+          .sort({
+            category: 1,
+            name: 1,
+          })
+          .lean();
+
+      /*
+       * Count how many stock products
+       * currently use each Stock Type.
+       */
+      const productCounts =
+        await StockItem.aggregate([
+          {
+            $match: {
+              stockType: {
+                $ne: null,
+              },
+            },
+          },
+          {
+            $group: {
+              _id: "$stockType",
+              productCount: {
+                $sum: 1,
+              },
+            },
+          },
+        ]);
+
+      const countMap =
+        new Map(
+          productCounts.map(
+            (row) => [
+              String(row._id),
+              row.productCount,
+            ]
+          )
+        );
+
+      const result =
+        types.map(
+          (type) => ({
+            ...type,
+
+            productCount:
+              countMap.get(
+                String(type._id)
+              ) || 0,
+          })
+        );
+
+      return res.json(result);
+    } catch (err) {
+      console.error(
+        "GET STOCK TYPES ERROR:",
+        err
+      );
+
+      return res
+        .status(500)
+        .json({
+          message:
+            "Unable to load stock types.",
+        });
+    }
+  }
+);
+
+
+/* ==========================================================
+   CREATE STOCK TYPE
+
+   POST /api/stock/types
+
+   Example:
+
+   {
+     "name": "Label",
+     "category": "raw_material",
+     "notes": ""
+   }
+========================================================== */
+
+router.post(
+  "/types",
+  async (req, res) => {
+    try {
+      const {
+        name,
+        category,
+        notes = "",
+      } = req.body;
+
+      const finalName =
+        cleanProductName(name);
+
+      if (!finalName) {
+        return res
+          .status(400)
+          .json({
+            message:
+              "Stock Type name is required.",
+          });
+      }
+
+      if (
+        !VALID_CATEGORIES.includes(
+          category
+        )
+      ) {
+        return res
+          .status(400)
+          .json({
+            message:
+              "Please select a valid main category.",
+          });
+      }
+
+      const normalizedName =
+        finalName.toLowerCase();
+
+      const duplicate =
+        await StockType.findOne({
+          category,
+          normalizedName,
+        }).lean();
+
+      if (duplicate) {
+        return res
+          .status(409)
+          .json({
+            message:
+              `Stock Type "${finalName}" already exists in this main category.`,
+          });
+      }
+
+      const stockType =
+        await StockType.create({
+          name: finalName,
+
+          normalizedName,
+
+          category,
+
+          notes:
+            String(
+              notes || ""
+            ).trim(),
+        });
+
+      return res
+        .status(201)
+        .json({
+          message:
+            "Stock Type created successfully.",
+
+          stockType: {
+            ...stockType.toObject(),
+
+            productCount: 0,
+          },
+        });
+    } catch (err) {
+      console.error(
+        "CREATE STOCK TYPE ERROR:",
+        err
+      );
+
+      if (
+        err?.code === 11000
+      ) {
+        return res
+          .status(409)
+          .json({
+            message:
+              "This Stock Type already exists in the selected main category.",
+          });
+      }
+
+      return res
+        .status(500)
+        .json({
+          message:
+            err.message ||
+            "Unable to create Stock Type.",
+        });
+    }
+  }
+);
+
+
+/* ==========================================================
+   UPDATE STOCK TYPE
+
+   PUT /api/stock/types/:id
+
+   Name and notes can be changed.
+
+   Main category can only change when
+   no products currently use this type.
+========================================================== */
+
+router.put(
+  "/types/:id",
+  async (req, res) => {
+    try {
+      const {
+        id,
+      } = req.params;
+
+      if (
+        !mongoose.Types.ObjectId.isValid(
+          id
+        )
+      ) {
+        return res
+          .status(400)
+          .json({
+            message:
+              "Invalid Stock Type ID.",
+          });
+      }
+
+      const stockType =
+        await StockType.findById(
+          id
+        );
+
+      if (!stockType) {
+        return res
+          .status(404)
+          .json({
+            message:
+              "Stock Type not found.",
+          });
+      }
+
+      const {
+        name,
+        category,
+        notes,
+      } = req.body;
+
+      let nextName =
+        stockType.name;
+
+      let nextCategory =
+        stockType.category;
+
+
+      /* ------------------------------
+         NAME
+      ------------------------------ */
+
+      if (
+        name !== undefined
+      ) {
+        nextName =
+          cleanProductName(
+            name
+          );
+
+        if (!nextName) {
+          return res
+            .status(400)
+            .json({
+              message:
+                "Stock Type name cannot be empty.",
+            });
+        }
+      }
+
+
+      /* ------------------------------
+         CATEGORY
+      ------------------------------ */
+
+      if (
+        category !== undefined
+      ) {
+        if (
+          !VALID_CATEGORIES.includes(
+            category
+          )
+        ) {
+          return res
+            .status(400)
+            .json({
+              message:
+                "Invalid main stock category.",
+            });
+        }
+
+        if (
+          category !==
+          stockType.category
+        ) {
+          const productCount =
+            await StockItem.countDocuments({
+              stockType:
+                stockType._id,
+            });
+
+          if (
+            productCount > 0
+          ) {
+            return res
+              .status(400)
+              .json({
+                message:
+                  `Main category cannot be changed because ${productCount} product${
+                    productCount === 1
+                      ? ""
+                      : "s"
+                  } currently use this Stock Type.`,
+              });
+          }
+        }
+
+        nextCategory =
+          category;
+      }
+
+
+      /* ------------------------------
+         DUPLICATE CHECK
+      ------------------------------ */
+
+      const normalizedName =
+        nextName.toLowerCase();
+
+      const duplicate =
+        await StockType.findOne({
+          _id: {
+            $ne:
+              stockType._id,
+          },
+
+          category:
+            nextCategory,
+
+          normalizedName,
+        }).lean();
+
+      if (duplicate) {
+        return res
+          .status(409)
+          .json({
+            message:
+              `Stock Type "${nextName}" already exists in this main category.`,
+          });
+      }
+
+
+      /* ------------------------------
+         SAVE
+      ------------------------------ */
+
+      stockType.name =
+        nextName;
+
+      stockType.normalizedName =
+        normalizedName;
+
+      stockType.category =
+        nextCategory;
+
+      if (
+        notes !== undefined
+      ) {
+        stockType.notes =
+          String(
+            notes || ""
+          ).trim();
+      }
+
+      await stockType.save();
+
+      const productCount =
+        await StockItem.countDocuments({
+          stockType:
+            stockType._id,
+        });
+
+      return res.json({
+        message:
+          "Stock Type updated successfully.",
+
+        stockType: {
+          ...stockType.toObject(),
+
+          productCount,
+        },
+      });
+    } catch (err) {
+      console.error(
+        "UPDATE STOCK TYPE ERROR:",
+        err
+      );
+
+      if (
+        err?.code === 11000
+      ) {
+        return res
+          .status(409)
+          .json({
+            message:
+              "This Stock Type already exists in the selected main category.",
+          });
+      }
+
+      return res
+        .status(500)
+        .json({
+          message:
+            err.message ||
+            "Unable to update Stock Type.",
+        });
+    }
+  }
+);
+
+
+/* ==========================================================
+   DELETE STOCK TYPE
+
+   DELETE /api/stock/types/:id
+
+   Deletion is blocked when any stock
+   product still uses this Stock Type.
+========================================================== */
+
+router.delete(
+  "/types/:id",
+  async (req, res) => {
+    try {
+      const {
+        id,
+      } = req.params;
+
+      if (
+        !mongoose.Types.ObjectId.isValid(
+          id
+        )
+      ) {
+        return res
+          .status(400)
+          .json({
+            message:
+              "Invalid Stock Type ID.",
+          });
+      }
+
+      const stockType =
+        await StockType.findById(
+          id
+        );
+
+      if (!stockType) {
+        return res
+          .status(404)
+          .json({
+            message:
+              "Stock Type not found.",
+          });
+      }
+
+      const productCount =
+        await StockItem.countDocuments({
+          stockType:
+            stockType._id,
+        });
+
+      if (
+        productCount > 0
+      ) {
+        return res
+          .status(400)
+          .json({
+            message:
+              `Cannot delete "${stockType.name}". ${productCount} product${
+                productCount === 1
+                  ? " is"
+                  : "s are"
+              } using this Stock Type. Move those products to another Stock Type first.`,
+          });
+      }
+
+      await StockType.deleteOne({
+        _id:
+          stockType._id,
+      });
+
+      return res.json({
+        message:
+          `Stock Type "${stockType.name}" deleted successfully.`,
+      });
+    } catch (err) {
+      console.error(
+        "DELETE STOCK TYPE ERROR:",
+        err
+      );
+
+      return res
+        .status(500)
+        .json({
+          message:
+            err.message ||
+            "Unable to delete Stock Type.",
+        });
+    }
+  }
+);
 
 
 /* ==========================================================
