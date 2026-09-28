@@ -953,83 +953,6 @@ router.get(
 );
 
 
-/* ==========================================================
-   GET ALL STOCK ITEMS
-
-   GET /api/stock
-
-   Optional:
-   ?category=raw_material
-   ?search=abc
-========================================================== */
-
-router.get(
-  "/",
-  async (req, res) => {
-    try {
-      const {
-        category,
-        search,
-      } = req.query;
-
-      const query = {};
-
-      if (category) {
-        if (
-          !VALID_CATEGORIES.includes(
-            category
-          )
-        ) {
-          return res
-            .status(400)
-            .json({
-              message:
-                "Invalid stock category.",
-            });
-        }
-
-        query.category =
-          category;
-      }
-
-      if (
-        search &&
-        search.trim()
-      ) {
-        query.productName = {
-          $regex:
-            escapeRegex(
-              search.trim()
-            ),
-
-          $options: "i",
-        };
-      }
-
-      const items =
-        await StockItem.find(
-          query
-        )
-          .sort({
-            productName: 1,
-          });
-
-      return res.json(items);
-    } catch (err) {
-      console.error(
-        "GET STOCK ERROR:",
-        err
-      );
-
-      return res
-        .status(500)
-        .json({
-          message:
-            "Unable to load stock items.",
-        });
-    }
-  }
-);
 
 /* ==========================================================
    GET ALL STOCK ITEMS
@@ -1551,6 +1474,7 @@ router.put(
         productName,
         category,
         unit,
+        stockType,
         minimumStock,
         notes,
       } = req.body;
