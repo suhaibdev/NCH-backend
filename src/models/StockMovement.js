@@ -30,6 +30,25 @@ const stockMovementSchema =
         ],
       },
 
+      supplier: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "Supplier",
+        default: null,
+      },
+
+      supplierName: {
+        type: String,
+        default: "",
+        trim: true,
+      },
+
+      size: {
+        lengthValue: { type: Number, default: null },
+        lengthUnit: { type: String, default: null },
+        widthValue: { type: Number, default: null },
+        widthUnit: { type: String, default: null },
+      },
+
       unit: {
         type: String,
         required: true,

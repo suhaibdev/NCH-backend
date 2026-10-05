@@ -6,6 +6,7 @@ const router = express.Router();
 const StockItem = require("../models/StockItem");
 const StockMovement = require("../models/StockMovement");
 const StockType = require("../models/StockType");
+const Supplier = require("../models/Supplier");
 
 
 /* ==========================================================
@@ -22,6 +23,16 @@ const VALID_UNITS = [
   "pcs",
   "dozen",
 ];
+
+const VALID_SIZE_UNITS = [
+  "m",
+  "cm",
+  "inch",
+  "ft",
+];
+
+const normalizeBoolean = (value) =>
+  value === true || value === "true";
 
 
 /* ==========================================================
@@ -107,22 +118,141 @@ const parseWholeNumber = (
 };
 
 
+const normalizeSize = (
+  size,
+  required = false
+) => {
+  const fields = [
+    "lengthValue",
+    "lengthUnit",
+    "widthValue",
+    "widthUnit",
+  ];
+
+  const isEmpty =
+    !size ||
+    typeof size !== "object" ||
+    fields.every(
+      (field) =>
+        size[field] === undefined ||
+        size[field] === null ||
+        String(size[field]).trim() === ""
+    );
+
+  if (isEmpty) {
+    return required
+      ? {
+          valid: false,
+          message: "Complete size details are required for this Stock Type.",
+        }
+      : { valid: true, value: null };
+  }
+
+  const lengthValue = Number(size.lengthValue);
+  const widthValue = Number(size.widthValue);
+  const lengthUnit = String(size.lengthUnit || "").trim();
+  const widthUnit = String(size.widthUnit || "").trim();
+
+  if (
+    !Number.isFinite(lengthValue) ||
+    !Number.isFinite(widthValue) ||
+    lengthValue <= 0 ||
+    widthValue <= 0 ||
+    !VALID_SIZE_UNITS.includes(lengthUnit) ||
+    !VALID_SIZE_UNITS.includes(widthUnit)
+  ) {
+    return {
+      valid: false,
+      message: "Enter positive length and width values with valid size units.",
+    };
+  }
+
+  return {
+    valid: true,
+    value: {
+      lengthValue,
+      lengthUnit,
+      widthValue,
+      widthUnit,
+    },
+  };
+};
+
+const validateStockIdentity = async ({
+  stockType,
+  supplier,
+  size,
+}) => {
+  const requiresSupplier = Boolean(stockType?.requiresSupplier);
+  const requiresSize = Boolean(stockType?.requiresSize);
+  let resolvedSupplier = null;
+
+  if (requiresSupplier && !supplier) {
+    return {
+      valid: false,
+      message: "Supplier is required for this Stock Type.",
+    };
+  }
+
+  if (supplier) {
+    if (!mongoose.Types.ObjectId.isValid(supplier)) {
+      return { valid: false, message: "Invalid Supplier ID." };
+    }
+
+    resolvedSupplier = await Supplier.findById(supplier)
+      .select("_id name")
+      .lean();
+
+    if (!resolvedSupplier) {
+      return { valid: false, message: "Supplier not found." };
+    }
+  }
+
+  const normalizedSize = normalizeSize(size, requiresSize);
+
+  if (!normalizedSize.valid) {
+    return normalizedSize;
+  }
+
+  return {
+    valid: true,
+    supplier: resolvedSupplier,
+    size: normalizedSize.value,
+  };
+};
+
 const findDuplicateProduct =
   async (
-    productName,
+    {
+      productName,
+      category,
+      stockType,
+      supplier,
+      size,
+      unit,
+      isTracked,
+    },
     excludeId = null,
     session = null
   ) => {
-    const query = {
-      productName: {
-        $regex:
-          `^${escapeRegex(
-            productName
-          )}$`,
-
-        $options: "i",
-      },
-    };
+    const query = isTracked
+      ? {
+          category,
+          stockType: stockType || null,
+          supplier: supplier || null,
+          "size.lengthValue": size?.lengthValue ?? null,
+          "size.lengthUnit": size?.lengthUnit ?? null,
+          "size.widthValue": size?.widthValue ?? null,
+          "size.widthUnit": size?.widthUnit ?? null,
+          unit,
+        }
+      : {
+          productName: {
+            $regex:
+              `^${escapeRegex(productName)}$`,
+            $options: "i",
+          },
+        };
 
 
     if (excludeId) {
@@ -305,6 +435,8 @@ router.post(
         name,
         category,
         notes = "",
+        requiresSupplier = false,
+        requiresSize = false,
       } = req.body;
 
 
@@ -334,6 +466,18 @@ router.post(
           .json({
             message:
               "Please select a valid main category.",
+          });
+      }
+
+      if (
+        category === "finished_goods" &&
+        (normalizeBoolean(requiresSupplier) ||
+          normalizeBoolean(requiresSize))
+      ) {
+        return res
+          .status(400)
+          .json({
+            message: "Finished Goods Stock Types cannot require supplier or size.",
           });
       }
 
@@ -372,6 +516,16 @@ router.post(
             String(
               notes || ""
             ).trim(),
+
+          requiresSupplier:
+            category === "finished_goods"
+              ? false
+              : normalizeBoolean(requiresSupplier),
+
+          requiresSize:
+            category === "finished_goods"
+              ? false
+              : normalizeBoolean(requiresSize),
         });
 
 
@@ -468,6 +622,8 @@ router.put(
         name,
         category,
         notes,
+        requiresSupplier,
+        requiresSize,
       } = req.body;
 
 
@@ -589,6 +745,30 @@ router.put(
 
       stockType.category =
         nextCategory;
+
+      if (nextCategory === "finished_goods") {
+        if (
+          normalizeBoolean(requiresSupplier) ||
+          normalizeBoolean(requiresSize)
+        ) {
+          return res
+            .status(400)
+            .json({
+              message: "Finished Goods Stock Types cannot require supplier or size.",
+            });
+        }
+
+        stockType.requiresSupplier = false;
+        stockType.requiresSize = false;
+      } else {
+        if (requiresSupplier !== undefined) {
+          stockType.requiresSupplier = normalizeBoolean(requiresSupplier);
+        }
+
+        if (requiresSize !== undefined) {
+          stockType.requiresSize = normalizeBoolean(requiresSize);
+        }
+      }
 
 
       if (
@@ -774,8 +954,9 @@ router.get(
         })
           .populate(
             "stockType",
-            "name category"
+            "name category requiresSupplier requiresSize"
           )
+          .populate("supplier", "name")
           .sort({
             currentStock: 1,
             productName: 1,
@@ -942,10 +1123,20 @@ router.get(
         await StockMovement.find(
           query
         )
-          .populate(
-            "item",
-            "productName category stockType unit currentStock minimumStock"
-          )
+          .populate({
+            path: "item",
+            select: "productName category stockType supplier size unit currentStock minimumStock",
+            populate: [
+              {
+                path: "supplier",
+                select: "name",
+              },
+              {
+                path: "stockType",
+                select: "name category requiresSupplier requiresSize",
+              },
+            ],
+          })
           .sort({
             movementDate: -1,
             createdAt: -1,
@@ -1232,8 +1423,9 @@ router.get(
         )
           .populate(
             "stockType",
-            "name category notes"
+            "name category notes requiresSupplier requiresSize"
           )
+          .populate("supplier", "name")
           .sort({
             productName: 1,
           });
@@ -1278,6 +1470,8 @@ router.post(
         productName,
         category,
         stockType = null,
+        supplier = null,
+        size = null,
         unit,
         openingStock = 0,
         minimumStock = 0,
@@ -1337,6 +1531,19 @@ router.post(
         null;
 
 
+      if (
+        (category === "raw_material" ||
+          category === "washed_raw_material") &&
+        !stockType
+      ) {
+        return res
+          .status(400)
+          .json({
+            message: "Stock Type is required for Raw Material and Washed Raw Material.",
+          });
+      }
+
+
       if (stockType) {
         if (
           !mongoose.Types.ObjectId.isValid(
@@ -1381,6 +1588,23 @@ router.post(
                 `"${selectedStockType.name}" belongs to a different main stock category.`,
             });
         }
+      }
+
+
+      const identityCheck =
+        await validateStockIdentity({
+          stockType: selectedStockType,
+          supplier,
+          size,
+        });
+
+
+      if (!identityCheck.valid) {
+        return res
+          .status(400)
+          .json({
+            message: identityCheck.message,
+          });
       }
 
 
@@ -1431,7 +1655,18 @@ router.post(
 
       const duplicate =
         await findDuplicateProduct(
-          finalName,
+          {
+            productName: finalName,
+            category,
+            stockType: selectedStockType?._id || null,
+            supplier: identityCheck.supplier?._id || null,
+            size: identityCheck.size,
+            unit,
+            isTracked: Boolean(
+              selectedStockType?.requiresSupplier ||
+              selectedStockType?.requiresSize
+            ),
+          },
           null,
           session
         );
@@ -1445,7 +1680,10 @@ router.post(
           .status(409)
           .json({
             message:
-              "A stock product with this name already exists.",
+              selectedStockType?.requiresSupplier ||
+              selectedStockType?.requiresSize
+                ? "A matching stock item already exists for this supplier, type and size."
+                : "A stock product with this name already exists.",
           });
       }
 
@@ -1461,6 +1699,14 @@ router.post(
             selectedStockType
               ? selectedStockType._id
               : null,
+
+          supplier:
+            identityCheck.supplier
+              ? identityCheck.supplier._id
+              : null,
+
+          size:
+            identityCheck.size,
 
           unit,
 
@@ -1501,6 +1747,15 @@ router.post(
 
               category:
                 item.category,
+
+              supplier:
+                item.supplier,
+
+              supplierName:
+                identityCheck.supplier?.name || "",
+
+              size:
+                item.size,
 
               unit:
                 item.unit,
@@ -1550,8 +1805,8 @@ router.post(
           item._id
         ).populate(
           "stockType",
-          "name category notes"
-        );
+          "name category notes requiresSupplier requiresSize"
+        ).populate("supplier", "name");
 
 
       return res
@@ -1639,11 +1894,18 @@ router.put(
           });
       }
 
+      const originalStockTypeId =
+        item.stockType
+          ? String(item.stockType)
+          : "";
+
 
       const {
         productName,
         category,
         stockType,
+        supplier,
+        size,
         unit,
         minimumStock,
         notes,
@@ -1670,23 +1932,6 @@ router.put(
             .json({
               message:
                 "Product name cannot be empty.",
-            });
-        }
-
-
-        const duplicate =
-          await findDuplicateProduct(
-            finalName,
-            item._id
-          );
-
-
-        if (duplicate) {
-          return res
-            .status(409)
-            .json({
-              message:
-                "Another stock product already uses this name.",
             });
         }
 
@@ -1950,6 +2195,110 @@ router.put(
       }
 
 
+      const selectedStockType = item.stockType
+        ? await StockType.findById(item.stockType).lean()
+        : null;
+
+
+      if (
+        (item.category === "raw_material" ||
+          item.category === "washed_raw_material") &&
+        !selectedStockType
+      ) {
+        return res
+          .status(400)
+          .json({
+            message: "Select a Stock Type to classify this Raw Material or Washed Raw Material item.",
+          });
+      }
+
+
+      const identityCheck =
+        await validateStockIdentity({
+          stockType: selectedStockType,
+          supplier:
+            supplier === undefined
+              ? item.supplier
+              : supplier,
+          size:
+            size === undefined
+              ? item.size
+              : size,
+        });
+
+
+      if (!identityCheck.valid) {
+        return res
+          .status(400)
+          .json({
+            message: identityCheck.message,
+          });
+      }
+
+
+      const oldSize = normalizeSize(item.size).value;
+      const identityChanged =
+        originalStockTypeId !==
+          String(selectedStockType?._id || "") ||
+        String(item.supplier || "") !==
+          String(identityCheck.supplier?._id || "") ||
+        JSON.stringify(oldSize) !==
+          JSON.stringify(identityCheck.size);
+
+
+      if (identityChanged) {
+        const movementExists =
+          await StockMovement.exists({ item: item._id });
+
+        if (movementExists || item.currentStock > 0) {
+          return res
+            .status(400)
+            .json({
+              message: "Supplier, Stock Type, or size cannot be changed after stock activity has started.",
+            });
+        }
+      }
+
+
+      const duplicate =
+        await findDuplicateProduct(
+          {
+            productName: item.productName,
+            category: item.category,
+            stockType: selectedStockType?._id || null,
+            supplier: identityCheck.supplier?._id || null,
+            size: identityCheck.size,
+            unit: item.unit,
+            isTracked: Boolean(
+              selectedStockType?.requiresSupplier ||
+              selectedStockType?.requiresSize
+            ),
+          },
+          item._id
+        );
+
+
+      if (duplicate) {
+        return res
+          .status(409)
+          .json({
+            message:
+              selectedStockType?.requiresSupplier ||
+              selectedStockType?.requiresSize
+                ? "A matching stock item already exists for this supplier, type and size."
+                : "Another stock product already uses this name.",
+          });
+      }
+
+
+      item.supplier =
+        identityCheck.supplier
+          ? identityCheck.supplier._id
+          : null;
+
+      item.size = identityCheck.size;
+
+
       await item.save();
 
 
@@ -1958,8 +2307,8 @@ router.put(
           item._id
         ).populate(
           "stockType",
-          "name category notes"
-        );
+          "name category notes requiresSupplier requiresSize"
+        ).populate("supplier", "name");
 
 
       return res.json({
@@ -2096,6 +2445,14 @@ router.post(
         balanceAfter -
         quantityCheck.value;
 
+      const supplierSnapshot =
+        updatedItem.supplier
+          ? await Supplier.findById(updatedItem.supplier)
+              .select("name")
+              .session(session)
+              .lean()
+          : null;
+
 
       await StockMovement.create(
         [
@@ -2108,6 +2465,15 @@ router.post(
 
             category:
               updatedItem.category,
+
+            supplier:
+              updatedItem.supplier || null,
+
+            supplierName:
+              supplierSnapshot?.name || "",
+
+            size:
+              updatedItem.size || null,
 
             unit:
               updatedItem.unit,
@@ -2161,8 +2527,8 @@ router.post(
           updatedItem._id
         ).populate(
           "stockType",
-          "name category notes"
-        );
+          "name category notes requiresSupplier requiresSize"
+        ).populate("supplier", "name");
 
 
       return res.json({
@@ -2366,6 +2732,14 @@ router.post(
         balanceAfter +
         quantityCheck.value;
 
+      const supplierSnapshot =
+        updatedItem.supplier
+          ? await Supplier.findById(updatedItem.supplier)
+              .select("name")
+              .session(session)
+              .lean()
+          : null;
+
 
       await StockMovement.create(
         [
@@ -2378,6 +2752,15 @@ router.post(
 
             category:
               updatedItem.category,
+
+            supplier:
+              updatedItem.supplier || null,
+
+            supplierName:
+              supplierSnapshot?.name || "",
+
+            size:
+              updatedItem.size || null,
 
             unit:
               updatedItem.unit,
@@ -2437,8 +2820,8 @@ router.post(
           updatedItem._id
         ).populate(
           "stockType",
-          "name category notes"
-        );
+          "name category notes requiresSupplier requiresSize"
+        ).populate("supplier", "name");
 
 
       return res.json({
@@ -2517,8 +2900,9 @@ router.get(
         )
           .populate(
             "stockType",
-            "name category notes"
+            "name category notes requiresSupplier requiresSize"
           )
+          .populate("supplier", "name")
           .lean();
 
 

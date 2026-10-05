@@ -30,6 +30,35 @@ const stockItemSchema = new mongoose.Schema(
       default: null,
     },
 
+    supplier: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Supplier",
+      default: null,
+    },
+
+    size: {
+      lengthValue: {
+        type: Number,
+        min: 0,
+        default: null,
+      },
+      lengthUnit: {
+        type: String,
+        enum: ["m", "cm", "inch", "ft", null],
+        default: null,
+      },
+      widthValue: {
+        type: Number,
+        min: 0,
+        default: null,
+      },
+      widthUnit: {
+        type: String,
+        enum: ["m", "cm", "inch", "ft", null],
+        default: null,
+      },
+    },
+
     unit: {
       type: String,
       required: true,
@@ -76,6 +105,17 @@ stockItemSchema.index({
 stockItemSchema.index({
   category: 1,
   productName: 1,
+});
+
+stockItemSchema.index({
+  category: 1,
+  stockType: 1,
+  supplier: 1,
+  "size.lengthValue": 1,
+  "size.lengthUnit": 1,
+  "size.widthValue": 1,
+  "size.widthUnit": 1,
+  unit: 1,
 });
 
 /*

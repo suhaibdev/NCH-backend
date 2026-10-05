@@ -33,6 +33,16 @@ const stockTypeSchema =
         trim: true,
         maxlength: 500,
       },
+
+      requiresSupplier: {
+        type: Boolean,
+        default: false,
+      },
+
+      requiresSize: {
+        type: Boolean,
+        default: false,
+      },
     },
     {
       timestamps: true,
