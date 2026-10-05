@@ -8,10 +8,10 @@ const router = express.Router();
 const FIELD_LIMITS = {
   name: 150,
   contactPerson: 100,
-  phone: 30,
+  phone: 10,
   email: 160,
   address: 500,
-  gstNumber: 30,
+  gstNumber: 15,
   notes: 1000,
 };
 
@@ -64,7 +64,12 @@ const cleanText = (
   if (cleaned.length > FIELD_LIMITS[field]) {
     return {
       valid: false,
-      message: `${field} must be ${FIELD_LIMITS[field]} characters or fewer.`,
+      message:
+        field === "phone"
+          ? "Contact number must be exactly 10 digits."
+          : field === "gstNumber"
+          ? "GSTIN must be a valid 15-character GST number."
+          : `${field} must be ${FIELD_LIMITS[field]} characters or fewer.`,
     };
   }
 
@@ -79,6 +84,44 @@ const cleanText = (
 
 
 const getSupplierPayload = (body) => {
+  if (
+    body.phone !== undefined &&
+    body.phone !== null &&
+    (
+      typeof body.phone !== "string" ||
+      (
+        body.phone !== "" &&
+        !/^\d{10}$/.test(body.phone)
+      )
+    )
+  ) {
+    return {
+      valid: false,
+      message:
+        "Contact number must be exactly 10 digits.",
+    };
+  }
+
+  if (
+    body.gstNumber !== undefined &&
+    body.gstNumber !== null &&
+    (
+      typeof body.gstNumber !== "string" ||
+      (
+        body.gstNumber !== "" &&
+        !/^[A-Za-z0-9]{15}$/.test(
+          body.gstNumber
+        )
+      )
+    )
+  ) {
+    return {
+      valid: false,
+      message:
+        "GSTIN must be a valid 15-character GST number.",
+    };
+  }
+
   const fields = [
     "name",
     "contactPerson",
@@ -114,6 +157,33 @@ const getSupplierPayload = (body) => {
     return {
       valid: false,
       message: "Please enter a valid email address.",
+    };
+  }
+
+  if (
+    payload.phone &&
+    !/^\d{10}$/.test(payload.phone)
+  ) {
+    return {
+      valid: false,
+      message:
+        "Contact number must be exactly 10 digits.",
+    };
+  }
+
+  payload.gstNumber =
+    payload.gstNumber.toUpperCase();
+
+  if (
+    payload.gstNumber &&
+    !/^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/.test(
+      payload.gstNumber
+    )
+  ) {
+    return {
+      valid: false,
+      message:
+        "GSTIN must be a valid 15-character GST number.",
     };
   }
 
