@@ -17,6 +17,7 @@ app.use(express.json());
 const employeeRoutes = require('./src/routes/employees');
 const customerRoutes = require('./src/routes/customers');
 const supplierRoutes = require('./src/routes/suppliers');
+const materialReceiptRoutes = require('./src/routes/materialReceipts');
 const attendanceRoutes = require('./src/routes/attendance');
 const payoutRoutes = require('./src/routes/payout');
 const stockRoutes = require('./src/routes/stock');
@@ -36,6 +37,7 @@ app.use('/api/dashboard', verifyToken, authorizeRoles('admin'), dashboardRoutes)
 app.use('/api/employees', verifyToken, authorizeRoles('admin'), employeeRoutes);
 app.use('/api/customers', verifyToken, authorizeRoles('admin'), customerRoutes);
 app.use('/api/suppliers', verifyToken, authorizeRoles('admin'), supplierRoutes);
+app.use('/api/material-receipts', verifyToken, authorizeRoles('admin'), materialReceiptRoutes);
 app.use('/api/attendance', verifyToken, authorizeRoles('admin'), attendanceRoutes);
 app.use('/api/payout', verifyToken, authorizeRoles('admin'), payoutRoutes);
 app.use('/api/stock', verifyToken, authorizeRoles('admin'), stockRoutes);

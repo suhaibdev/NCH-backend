@@ -30,6 +30,18 @@ const stockMovementSchema =
         ],
       },
 
+      stockType: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "StockType",
+        default: null,
+      },
+
+      stockTypeName: {
+        type: String,
+        default: "",
+        trim: true,
+      },
+
       supplier: {
         type: mongoose.Schema.Types.ObjectId,
         ref: "Supplier",
@@ -67,6 +79,8 @@ const stockMovementSchema =
         enum: [
           "stock_in",
           "stock_out",
+
+          "material_receipt",
 
           "washing_out",
           "washing_in",
@@ -130,6 +144,7 @@ const stockMovementSchema =
           "washing",
           "manufacturing",
           "manual",
+          "material_receipt",
         ],
         default: "",
       },
