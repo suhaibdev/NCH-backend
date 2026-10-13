@@ -1,7 +1,7 @@
-const express = require('express');
-const dotenv = require('dotenv');
-const cors = require('cors');
-const mongoose = require('mongoose');
+const express = require("express");
+const dotenv = require("dotenv");
+const cors = require("cors");
+const mongoose = require("mongoose");
 
 // Load environment variables from .env file
 dotenv.config();
@@ -14,55 +14,60 @@ app.use(cors());
 app.use(express.json());
 
 // Import routes
-const employeeRoutes = require('./src/routes/employees');
-const customerRoutes = require('./src/routes/customers');
-const supplierRoutes = require('./src/routes/suppliers');
-const materialReceiptRoutes = require('./src/routes/materialReceipts');
-const supplierPaymentRoutes = require('./src/routes/supplierPayments');
-const washerRoutes = require('./src/routes/washers');
-const washingProcessRoutes = require('./src/routes/washingProcesses');
-const washerAccountingRoutes = require('./src/routes/washerAccounting');
-const attendanceRoutes = require('./src/routes/attendance');
-const payoutRoutes = require('./src/routes/payout');
-const stockRoutes = require('./src/routes/stock');
-const dashboardRoutes = require('./src/routes/dashboard');
-const authRoutes = require('./src/routes/auth');
-const verifyToken = require('./src/middleware/authMiddleware');
-const authorizeRoles = require('./src/middleware/roleMiddleware');
+const employeeRoutes = require("./src/routes/employees");
+const customerRoutes = require("./src/routes/customers");
+const supplierRoutes = require("./src/routes/suppliers");
+const materialReceiptRoutes = require("./src/routes/materialReceipts");
+const supplierPaymentRoutes = require("./src/routes/supplierPayments");
+const washerRoutes = require("./src/routes/washers");
+const washingProcessRoutes = require("./src/routes/washingProcesses");
+const manufacturingRoutes = require("./src/routes/manufacturing");
+const washerAccountingRoutes = require("./src/routes/washerAccounting");
+const attendanceRoutes = require("./src/routes/attendance");
+const payoutRoutes = require("./src/routes/payout");
+const stockRoutes = require("./src/routes/stock");
+const dashboardRoutes = require("./src/routes/dashboard");
+const authRoutes = require("./src/routes/auth");
+const verifyToken = require("./src/middleware/authMiddleware");
+const authorizeRoles = require("./src/middleware/roleMiddleware");
 
 // A simple test route
-app.get('/', (req, res) => {
-  res.send('Backend server is running!');
+app.get("/", (req, res) => {
+  res.send("Backend server is running!");
 });
 
 // Register API routes
-app.use('/api/auth', authRoutes);
-app.use('/api/dashboard', verifyToken, authorizeRoles('admin'), dashboardRoutes);
-app.use('/api/employees', verifyToken, authorizeRoles('admin'), employeeRoutes);
-app.use('/api/customers', verifyToken, authorizeRoles('admin'), customerRoutes);
-app.use('/api/suppliers', verifyToken, authorizeRoles('admin'), supplierRoutes);
-app.use('/api/material-receipts', verifyToken, authorizeRoles('admin'), materialReceiptRoutes);
-app.use('/api/supplier-payments', verifyToken, authorizeRoles('admin'), supplierPaymentRoutes);
-app.use('/api/washers', verifyToken, authorizeRoles('admin'), washerRoutes);
-app.use('/api/washing-processes', verifyToken, authorizeRoles('admin'), washingProcessRoutes);
-app.use('/api/washer-accounting', verifyToken, authorizeRoles('admin'), washerAccountingRoutes);
-app.use('/api/attendance', verifyToken, authorizeRoles('admin'), attendanceRoutes);
-app.use('/api/payout', verifyToken, authorizeRoles('admin'), payoutRoutes);
-app.use('/api/stock', verifyToken, authorizeRoles('admin'), stockRoutes);
+app.use("/api/auth", authRoutes);
+app.use("/api/dashboard", verifyToken, authorizeRoles("admin"), dashboardRoutes);
+app.use("/api/employees", verifyToken, authorizeRoles("admin"), employeeRoutes);
+app.use("/api/customers", verifyToken, authorizeRoles("admin"), customerRoutes);
+app.use("/api/suppliers", verifyToken, authorizeRoles("admin"), supplierRoutes);
+app.use("/api/material-receipts", verifyToken, authorizeRoles("admin"), materialReceiptRoutes);
+app.use("/api/supplier-payments", verifyToken, authorizeRoles("admin"), supplierPaymentRoutes);
+app.use("/api/washers", verifyToken, authorizeRoles("admin"), washerRoutes);
+app.use("/api/washing-processes", verifyToken, authorizeRoles("admin"), washingProcessRoutes);
+app.use("/api/manufacturing", verifyToken, authorizeRoles("admin"), manufacturingRoutes);
+app.use("/api/washer-accounting", verifyToken, authorizeRoles("admin"), washerAccountingRoutes);
+app.use("/api/attendance", verifyToken, authorizeRoles("admin"), attendanceRoutes);
+app.use("/api/payout", verifyToken, authorizeRoles("admin"), payoutRoutes);
+app.use("/api/stock", verifyToken, authorizeRoles("admin"), stockRoutes);
 
 // Connect to MongoDB with better error handling
-mongoose.connect(process.env.MONGODB_URI, {
-  useNewUrlParser: true,
-  useUnifiedTopology: true,
-}).then(() => {
-  console.log('✅ Connected to MongoDB');
-}).catch((err) => {
-  console.error('❌ MongoDB Connection Error:', err.message);
-  console.error('Make sure MONGODB_URI environment variable is set correctly');
-});
+mongoose
+  .connect(process.env.MONGODB_URI, {
+    useNewUrlParser: true,
+    useUnifiedTopology: true,
+  })
+  .then(() => {
+    console.log("✅ Connected to MongoDB");
+  })
+  .catch((err) => {
+    console.error("❌ MongoDB Connection Error:", err.message);
+    console.error("Make sure MONGODB_URI environment variable is set correctly");
+  });
 
 // Start server regardless of MongoDB connection
 app.listen(port, () => {
   console.log(`🚀 Server is running on port: ${port}`);
-  console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`Environment: ${process.env.NODE_ENV || "development"}`);
 });
