@@ -6,10 +6,12 @@ const mongoose = require('mongoose');
 const Employee = require('../models/Employee');
 const Attendance = require('../models/Attendance');
 const PayoutCounter = require('../models/PayoutCounter');
-// ===============================================
-// CONSTANTS
-// ===============================================
-const STANDARD_WORK_HOURS = 8;
+const {
+  STANDARD_WORK_HOURS,
+  calculateNetSalary,
+  getWorkingTime,
+  isPresentByWorkHours,
+} = require('../utils/payroll');
 
 // ===============================================
 // HELPER FUNCTIONS
@@ -67,20 +69,23 @@ const validatePayrollRange = (startDate, endDate) => {
  */
 const calculatePayrollMetrics = (attendance, start, end, hourlyRate) => {
   const periodAttendance = attendance.filter((item) => {
-    const workHours = item.workHours || 0;
+    const workHours = Number(item.workHours || 0);
     const overtime = item.overtime || 0;
     // Validate attendance records to prevent corrupt data from affecting payroll.
     const isValid = workHours >= 0 && workHours <= 24 && overtime >= 0 && overtime <= 24;
 
     // Compare dates directly after normalization.
-    return item.present && isValid && item.date >= start && item.date <= end;
+    // Work hours are authoritative. This also makes legacy zero-hour records
+    // absent even if they were saved with a stale `present: true` flag.
+    return isPresentByWorkHours(workHours) && isValid && item.date >= start && item.date <= end;
   });
 
-  const totalDaysWorked = periodAttendance.length;
   const totalHoursWorked = periodAttendance.reduce(
-    (sum, item) => sum + (item.workHours || 0),
+    (sum, item) => sum + Number(item.workHours || 0),
     0
   );
+  const workingTime = getWorkingTime(totalHoursWorked);
+  const totalDaysWorked = workingTime.fullWorkingDays;
   const overtimeHours = periodAttendance.reduce(
     (sum, item) => sum + (item.overtime || 0),
     0
@@ -96,6 +101,7 @@ const calculatePayrollMetrics = (attendance, start, end, hourlyRate) => {
     baseSalary,
     overtimeAmount,
     grossSalary,
+    workingTime,
   };
 };
 
@@ -119,17 +125,6 @@ const calculateAdvanceStatus = (attendanceRecords, payoutRecords) => {
     advanceRecovered,
     remainingAdvance: roundCurrency(Math.max(0, totalAdvanceTaken - advanceRecovered)),
   };
-};
-
-/**
- * Calculates the final net salary after all deductions.
- * @returns {number} The non-negative net salary.
- */
-const calculateNetSalary = (grossSalary, advanceDeducted, otherDeduction) => {
-  return Math.max(
-    0,
-    roundCurrency(grossSalary - (advanceDeducted || 0) - (otherDeduction || 0))
-  );
 };
 
 // ===============================================
@@ -334,6 +329,9 @@ router.post('/preview', async (req, res) => {
       endDate,
       totalDaysWorked: payroll.totalDaysWorked,
       totalHoursWorked: payroll.totalHoursWorked,
+      fullWorkingDays: payroll.workingTime.fullWorkingDays,
+      remainingWorkingHours: payroll.workingTime.remainingWorkingHours,
+      workingTime: payroll.workingTime,
       overtimeHours: payroll.overtimeHours,
       overtimeAmount: payroll.overtimeAmount,
       baseSalary: payroll.baseSalary,
@@ -605,6 +603,15 @@ router.post('/bulk-preview', async (req, res) => {
 
           totalHoursWorked:
             payroll.totalHoursWorked,
+
+          fullWorkingDays:
+            payroll.workingTime.fullWorkingDays,
+
+          remainingWorkingHours:
+            payroll.workingTime.remainingWorkingHours,
+
+          workingTime:
+            payroll.workingTime,
 
           overtimeHours:
             payroll.overtimeHours,
@@ -970,12 +977,7 @@ router.post('/bulk', async (req, res) => {
             deductions || 0
           );
 
-        if (
-          Number.isNaN(
-            manualAdvance
-          ) ||
-          manualAdvance < 0
-        ) {
+        if (!Number.isFinite(manualAdvance) || manualAdvance < 0) {
           throw new Error(
             'Advance deduction cannot be negative.'
           );
@@ -992,27 +994,9 @@ router.post('/bulk', async (req, res) => {
           );
         }
 
-        if (
-          Number.isNaN(
-            otherDeduction
-          ) ||
-          otherDeduction < 0
-        ) {
+        if (!Number.isFinite(otherDeduction) || otherDeduction < 0) {
           throw new Error(
             'Other deduction cannot be negative.'
-          );
-        }
-
-        /*
-         * Do not silently create a negative salary.
-         */
-        if (
-          manualAdvance +
-            otherDeduction >
-          payroll.grossSalary
-        ) {
-          throw new Error(
-            'Total deductions cannot be greater than gross salary.'
           );
         }
 
@@ -1062,6 +1046,12 @@ router.post('/bulk', async (req, res) => {
 
             totalHoursWorked:
               payroll.totalHoursWorked,
+
+            fullWorkingDays:
+              payroll.workingTime.fullWorkingDays,
+
+            remainingWorkingHours:
+              payroll.workingTime.remainingWorkingHours,
 
             overtimeHours:
               payroll.overtimeHours,
@@ -1155,6 +1145,12 @@ router.post('/bulk', async (req, res) => {
 
           totalHoursWorked:
             saved.totalHoursWorked,
+
+          fullWorkingDays:
+            saved.fullWorkingDays,
+
+          remainingWorkingHours:
+            saved.remainingWorkingHours,
 
           grossSalary:
             saved.grossSalary,
@@ -1418,13 +1414,13 @@ router.post('/', async (req, res) => {
     if (manualAdvance > advanceStatus.remainingAdvance) {
       return res.status(400).json({ message: `Maximum recoverable advance is ₹${roundCurrency(advanceStatus.remainingAdvance)}` });
     }
-    if (manualAdvance < 0) {
+    if (!Number.isFinite(manualAdvance) || manualAdvance < 0) {
       return res.status(400).json({ message: 'Advance deduction cannot be negative.' });
     }
 
     const otherDeduction = Number(deductions || 0);
-    if (otherDeduction < 0) {
-      return res.status(400).json({ message: 'Deductions cannot be negative.' });
+    if (!Number.isFinite(otherDeduction) || otherDeduction < 0) {
+      return res.status(400).json({ message: 'Other deduction cannot be negative.' });
     }
     const netSalary = calculateNetSalary(
       payroll.grossSalary,
@@ -1438,6 +1434,8 @@ router.post('/', async (req, res) => {
       endDate,
       totalDaysWorked: payroll.totalDaysWorked,
       totalHoursWorked: payroll.totalHoursWorked,
+      fullWorkingDays: payroll.workingTime.fullWorkingDays,
+      remainingWorkingHours: payroll.workingTime.remainingWorkingHours,
       overtimeHours: payroll.overtimeHours,
       dailySalary: employee.baseDailySalary,
       hourlyRate,
@@ -1539,7 +1537,7 @@ router.post('/register', async (req, res) => {
                   $filter: {
                     input: '$attendanceRecords',
                     as: 'att',
-                    cond: { $and: [{ $eq: ['$$att.present', true] }, { $gte: ['$$att.date', range.start] }, { $lte: ['$$att.date', range.end] }] }
+                    cond: { $and: [{ $gt: [{ $ifNull: ['$$att.workHours', 0] }, 0] }, { $gte: ['$$att.date', range.start] }, { $lte: ['$$att.date', range.end] }] }
                   }
                 }
               },
@@ -1567,12 +1565,17 @@ router.post('/register', async (req, res) => {
       const remainingAdvance = Math.max(0, roundCurrency(item.advance.totalAdvanceTaken - item.advance.advanceRecovered));
       const netSalary = calculateNetSalary(grossSalary, 0, 0);
 
+      const workingTime = getWorkingTime(item.payroll.workingHours);
+
       return {
         employeeId: item._id, // The aggregation returns _id
         employeeName: item.employeeName,
         dailySalary: item.dailySalary,
-        workingDays: item.payroll.workingDays,
-        workingHours: item.payroll.workingHours,
+        workingDays: workingTime.fullWorkingDays,
+        workingHours: workingTime.totalHours,
+        fullWorkingDays: workingTime.fullWorkingDays,
+        remainingWorkingHours: workingTime.remainingWorkingHours,
+        workingTime,
         overtimeHours: item.payroll.overtimeHours,
         overtimeAmount: roundCurrency(item.payroll.overtimeAmount),
         baseSalary: roundCurrency(item.payroll.baseSalary),

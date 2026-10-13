@@ -30,6 +30,17 @@ const payoutSchema = new mongoose.Schema(
         default: 0,
     },
 
+    // Optional snapshots keep historical payouts unchanged and printable.
+    fullWorkingDays: {
+        type: Number,
+        min: 0,
+    },
+
+    remainingWorkingHours: {
+        type: Number,
+        min: 0,
+    },
+
     overtimeHours: {
         type: Number,
         default: 0,

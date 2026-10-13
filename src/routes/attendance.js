@@ -2,6 +2,16 @@ const express = require('express');
 const router = express.Router();
 const Attendance = require('../models/Attendance');
 const Employee = require('../models/Employee');
+const {
+  isPresentByWorkHours,
+  toFiniteNumber,
+} = require('../utils/payroll');
+
+const hasValidHours = (value) =>
+  Number.isFinite(value) && value >= 0 && value <= 24;
+
+const hasValidAdvance = (value) =>
+  Number.isFinite(value) && value >= 0;
 
 // Get all attendance records
 router.get('/', async (req, res) => {
@@ -57,23 +67,25 @@ router.post('/', async (req, res) => {
       });
     }
 
-    const hours = Number(workHours ?? 0);
+    const hours = workHours === '' || workHours === undefined || workHours === null
+      ? 8
+      : Number(workHours);
     const ot = Number(overtime ?? 0);
     const advance = Number(advancePayment ?? 0);
 
-    if (hours < 0 || hours > 24) {
+    if (!hasValidHours(hours)) {
       return res.status(400).json({
         message: 'Work hours must be between 0 and 24.'
       });
     }
 
-    if (ot < 0 || ot > 24) {
+    if (!hasValidHours(ot)) {
       return res.status(400).json({
         message: 'Overtime must be between 0 and 24.'
       });
     }
 
-    if (advance < 0) {
+    if (!hasValidAdvance(advance)) {
       return res.status(400).json({
         message: 'Advance payment cannot be negative.'
       });
@@ -111,13 +123,14 @@ router.post('/', async (req, res) => {
     const attendance = new Attendance({
       employee: employeeId,
       date: date,
-      present: present,
+      // A zero-hour record is always absent, regardless of a client flag.
+      present: isPresentByWorkHours(hours),
       // Only fall back to 8 when the value is truly missing/blank.
       // (Using "workHours || 8" would wrongly turn a real 0 — an absent
       //  employee — back into 8, because 0 is "falsy" in JavaScript.)
-      workHours: (workHours === '' || workHours === undefined || workHours === null) ? 8 : workHours,
-      overtime: (overtime === '' || overtime === undefined || overtime === null) ? 0 : overtime,
-      advancePayment: (advancePayment === '' || advancePayment === undefined || advancePayment === null) ? 0 : advancePayment,
+      workHours: hours,
+      overtime: ot,
+      advancePayment: advance,
       notes: notes
     });
 
@@ -137,12 +150,34 @@ router.put('/:id', async (req, res) => {
       return res.status(404).json({ message: 'Attendance record not found' });
     }
 
-    const updateFields = ['present', 'workHours', 'overtime', 'advancePayment', 'notes'];
-    updateFields.forEach(field => {
-      if (req.body[field] !== undefined) {
-        attendance[field] = req.body[field];
-      }
-    });
+    const workHours = req.body.workHours === undefined
+      ? Number(attendance.workHours || 0)
+      : toFiniteNumber(req.body.workHours, Number.NaN);
+    const overtime = req.body.overtime === undefined
+      ? Number(attendance.overtime || 0)
+      : toFiniteNumber(req.body.overtime, Number.NaN);
+    const advancePayment = req.body.advancePayment === undefined
+      ? Number(attendance.advancePayment || 0)
+      : toFiniteNumber(req.body.advancePayment, Number.NaN);
+
+    if (!hasValidHours(workHours)) {
+      return res.status(400).json({ message: 'Work hours must be between 0 and 24.' });
+    }
+    if (!hasValidHours(overtime)) {
+      return res.status(400).json({ message: 'Overtime must be between 0 and 24.' });
+    }
+    if (!hasValidAdvance(advancePayment)) {
+      return res.status(400).json({ message: 'Advance payment cannot be negative.' });
+    }
+
+    attendance.workHours = workHours;
+    attendance.overtime = overtime;
+    attendance.advancePayment = advancePayment;
+    attendance.present = isPresentByWorkHours(workHours);
+
+    if (req.body.notes !== undefined) {
+      attendance.notes = req.body.notes;
+    }
 
     const updatedAttendance = await attendance.save();
     await updatedAttendance.populate('employee', 'name');
@@ -173,7 +208,20 @@ router.post('/bulk', async (req, res) => {
     const bulkAttendance = [];
 
     for (const record of records) {
-      const { employeeId, present, workHours, overtime, advancePayment, notes } = record;
+      const { employeeId, workHours, overtime, advancePayment, notes } = record;
+      const hours = workHours === '' || workHours === undefined || workHours === null
+        ? 8
+        : toFiniteNumber(workHours, Number.NaN);
+      const ot = overtime === '' || overtime === undefined || overtime === null
+        ? 0
+        : toFiniteNumber(overtime, Number.NaN);
+      const advance = advancePayment === '' || advancePayment === undefined || advancePayment === null
+        ? 0
+        : toFiniteNumber(advancePayment, Number.NaN);
+
+      if (!employeeId || !hasValidHours(hours) || !hasValidHours(ot) || !hasValidAdvance(advance)) {
+        return res.status(400).json({ message: 'Each bulk attendance record needs valid employee, work hours, overtime, and advance values.' });
+      }
       
       // Check if attendance already exists
       const exists = await Attendance.findOne({
@@ -185,10 +233,10 @@ router.post('/bulk', async (req, res) => {
         bulkAttendance.push({
           employee: employeeId,
           date: date,
-          present: present,
-          workHours: workHours || 8,
-          overtime: overtime || 0,
-          advancePayment: advancePayment || 0,
+          present: isPresentByWorkHours(hours),
+          workHours: hours,
+          overtime: ot,
+          advancePayment: advance,
           notes: notes
         });
       }
