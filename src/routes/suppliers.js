@@ -2,6 +2,11 @@ const express = require("express");
 const mongoose = require("mongoose");
 
 const Supplier = require("../models/Supplier");
+const MaterialReceipt = require("../models/MaterialReceipt");
+const SupplierPayment = require("../models/SupplierPayment");
+const {
+  getSupplierAccountSummary,
+} = require("../utils/supplierAccounting");
 
 const router = express.Router();
 
@@ -233,6 +238,125 @@ const parsePositiveInteger = (
 
 const isDuplicateKeyError = (err) =>
   err?.code === 11000;
+
+
+const getSupplierForAccount = async (id) => {
+  if (!mongoose.Types.ObjectId.isValid(id)) {
+    return { error: { status: 400, message: "Invalid supplier ID." } };
+  }
+
+  const supplier = await Supplier.findById(id)
+    .select("name contactPerson phone gstNumber")
+    .lean();
+
+  if (!supplier) {
+    return { error: { status: 404, message: "Supplier not found." } };
+  }
+
+  return { supplier };
+};
+
+
+/* ==========================================================
+   SUPPLIER ACCOUNT SUMMARY
+========================================================== */
+router.get("/:id/account-summary", async (req, res) => {
+  try {
+    const result = await getSupplierForAccount(req.params.id);
+    if (result.error) return res.status(result.error.status).json({ message: result.error.message });
+
+    const summary = await getSupplierAccountSummary(result.supplier._id);
+    return res.json({ supplier: result.supplier, ...summary });
+  } catch (err) {
+    console.error("GET SUPPLIER ACCOUNT SUMMARY ERROR:", err);
+    return res.status(500).json({ message: "Unable to load supplier account summary." });
+  }
+});
+
+
+/* ==========================================================
+   COMBINED SUPPLIER LEDGER
+========================================================== */
+router.get("/:id/ledger", async (req, res) => {
+  try {
+    const result = await getSupplierForAccount(req.params.id);
+    if (result.error) return res.status(result.error.status).json({ message: result.error.message });
+
+    const pageResult = parsePositiveInteger(req.query.page, 1, 1000000);
+    const limitResult = parsePositiveInteger(req.query.limit, 20, 100);
+    if (!pageResult.valid || !limitResult.valid) {
+      return res.status(400).json({ message: "Page must be a positive integer and limit must be between 1 and 100." });
+    }
+
+    const page = pageResult.value;
+    const limit = limitResult.value;
+    const supplierObjectId = result.supplier._id;
+    const [ledgerResult] = await MaterialReceipt.aggregate([
+      { $match: { supplier: supplierObjectId } },
+      {
+        $project: {
+          effectiveDate: "$receivedDate",
+          createdAt: 1,
+          type: { $literal: "purchase" },
+          amountPaise: "$totalAmountPaise",
+          stockTypeName: 1,
+          size: 1,
+          quantity: 1,
+          unit: 1,
+          supplierBillNumber: 1,
+          reference: { $literal: "" },
+          notes: 1,
+          method: { $literal: "" },
+        },
+      },
+      {
+        $unionWith: {
+          coll: SupplierPayment.collection.name,
+          pipeline: [
+            { $match: { supplier: supplierObjectId } },
+            {
+              $project: {
+                effectiveDate: "$paymentDate",
+                createdAt: 1,
+                type: { $literal: "payment" },
+                amountPaise: 1,
+                stockTypeName: { $literal: "" },
+                size: { $literal: null },
+                quantity: { $literal: null },
+                unit: { $literal: "" },
+                supplierBillNumber: { $literal: "" },
+                reference: 1,
+                notes: 1,
+                method: 1,
+              },
+            },
+          ],
+        },
+      },
+      { $sort: { effectiveDate: -1, createdAt: -1, _id: -1 } },
+      {
+        $facet: {
+          items: [{ $skip: (page - 1) * limit }, { $limit: limit }],
+          totals: [{ $count: "totalItems" }],
+        },
+      },
+    ]);
+
+    const totalItems = Number(ledgerResult?.totals?.[0]?.totalItems || 0);
+    return res.json({
+      items: ledgerResult?.items || [],
+      pagination: {
+        page,
+        limit,
+        totalItems,
+        totalPages: Math.ceil(totalItems / limit),
+      },
+    });
+  } catch (err) {
+    console.error("GET SUPPLIER LEDGER ERROR:", err);
+    return res.status(500).json({ message: "Unable to load supplier ledger." });
+  }
+});
 
 
 /* ==========================================================
