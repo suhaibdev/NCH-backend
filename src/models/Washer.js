@@ -15,6 +15,11 @@ const washerSchema = new mongoose.Schema(
     },
     address: { type: String, default: "", trim: true, maxlength: 500 },
     defaultRatePerPiecePaise: { type: Number, default: 0, min: 0, validate: Number.isSafeInteger },
+    washingRates: [{
+      stockType: { type: mongoose.Schema.Types.ObjectId, ref: "StockType", required: true },
+      stockTypeNameSnapshot: { type: String, required: true, trim: true },
+      ratePerPiecePaise: { type: Number, required: true, min: 0, validate: Number.isSafeInteger },
+    }],
     notes: { type: String, default: "", trim: true, maxlength: 1000 },
     isActive: { type: Boolean, default: true },
   },

@@ -21,6 +21,7 @@ const materialReceiptRoutes = require('./src/routes/materialReceipts');
 const supplierPaymentRoutes = require('./src/routes/supplierPayments');
 const washerRoutes = require('./src/routes/washers');
 const washingProcessRoutes = require('./src/routes/washingProcesses');
+const washerAccountingRoutes = require('./src/routes/washerAccounting');
 const attendanceRoutes = require('./src/routes/attendance');
 const payoutRoutes = require('./src/routes/payout');
 const stockRoutes = require('./src/routes/stock');
@@ -44,6 +45,7 @@ app.use('/api/material-receipts', verifyToken, authorizeRoles('admin'), material
 app.use('/api/supplier-payments', verifyToken, authorizeRoles('admin'), supplierPaymentRoutes);
 app.use('/api/washers', verifyToken, authorizeRoles('admin'), washerRoutes);
 app.use('/api/washing-processes', verifyToken, authorizeRoles('admin'), washingProcessRoutes);
+app.use('/api/washer-accounting', verifyToken, authorizeRoles('admin'), washerAccountingRoutes);
 app.use('/api/attendance', verifyToken, authorizeRoles('admin'), attendanceRoutes);
 app.use('/api/payout', verifyToken, authorizeRoles('admin'), payoutRoutes);
 app.use('/api/stock', verifyToken, authorizeRoles('admin'), stockRoutes);

@@ -1,6 +1,7 @@
 const express = require("express");
 const mongoose = require("mongoose");
 const Washer = require("../models/Washer");
+const StockType = require("../models/StockType");
 const { parseMoneyToPaise } = require("../utils/washing");
 
 const router = express.Router();
@@ -19,7 +20,7 @@ const cleanText = (value, field, maximum, { required = false } = {}) => {
   return { valid: true, value: cleaned };
 };
 
-const validatedPayload = (body, { partial = false } = {}) => {
+const validatedPayload = async (body, { partial = false } = {}) => {
   const result = {};
   const fields = [
     ["name", "Washer name", 150, true],
@@ -43,12 +44,30 @@ const validatedPayload = (body, { partial = false } = {}) => {
     if (typeof body.isActive !== "boolean") return { valid: false, message: "Active status must be true or false." };
     result.isActive = body.isActive;
   }
+  if (!partial || body.washingRates !== undefined) {
+    const supplied = body.washingRates === undefined ? [] : body.washingRates;
+    if (!Array.isArray(supplied)) return { valid: false, message: "Washing rates must be a list." };
+    const seen = new Set();
+    const rates = [];
+    for (const entry of supplied) {
+      if (!mongoose.Types.ObjectId.isValid(entry?.stockType) || seen.has(String(entry.stockType))) return { valid: false, message: "Each washing rate must use one eligible output Stock Type." };
+      seen.add(String(entry.stockType));
+      const rate = parseMoneyToPaise(entry.ratePerPiece);
+      if (!rate.valid) return rate;
+      rates.push({ stockType: entry.stockType, ratePerPiecePaise: rate.value });
+    }
+    const types = rates.length ? await StockType.find({ _id: { $in: rates.map((rate) => rate.stockType) }, category: "washed_raw_material", requiresSupplier: true, requiresSize: true }).select("_id name").lean() : [];
+    if (types.length !== rates.length) return { valid: false, message: "Washing rates can only use eligible Washed Raw Material Stock Types." };
+    const names = new Map(types.map((type) => [String(type._id), type.name]));
+    result.washingRates = rates.map((rate) => ({ ...rate, stockTypeNameSnapshot: names.get(String(rate.stockType)) }));
+  }
   return { valid: true, value: result };
 };
 
 const formatWasher = (washer) => ({
   ...washer,
   defaultRatePerPiece: (washer.defaultRatePerPiecePaise / 100).toFixed(2),
+  washingRates: (washer.washingRates || []).map((rate) => ({ ...rate, ratePerPiece: (rate.ratePerPiecePaise / 100).toFixed(2) })),
 });
 
 router.get("/", async (req, res) => {
@@ -84,7 +103,7 @@ router.get("/:id", async (req, res) => {
 });
 
 router.post("/", async (req, res) => {
-  const checked = validatedPayload(req.body || {});
+  const checked = await validatedPayload(req.body || {});
   if (!checked.valid) return res.status(400).json({ message: checked.message });
   try {
     const washer = await Washer.create(checked.value);
@@ -98,7 +117,7 @@ router.post("/", async (req, res) => {
 
 router.put("/:id", async (req, res) => {
   if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ message: "Invalid washer ID." });
-  const checked = validatedPayload(req.body || {}, { partial: true });
+  const checked = await validatedPayload(req.body || {}, { partial: true });
   if (!checked.valid) return res.status(400).json({ message: checked.message });
   if (!Object.keys(checked.value).length) return res.status(400).json({ message: "Provide at least one washer field to update." });
   try {

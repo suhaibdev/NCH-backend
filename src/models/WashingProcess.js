@@ -29,16 +29,19 @@ const washingProcessSchema = new mongoose.Schema(
     sentDate: { type: Date, required: true },
     completedDate: { type: Date, default: null },
     destinationStockItem: { type: mongoose.Schema.Types.ObjectId, ref: "StockItem", default: null },
-    destinationStockType: { type: mongoose.Schema.Types.ObjectId, ref: "StockType", default: null },
-    destinationStockTypeName: { type: String, default: "", trim: true },
+    destinationStockType: { type: mongoose.Schema.Types.ObjectId, ref: "StockType", required: true },
+    destinationStockTypeName: { type: String, required: true, trim: true },
     notes: { type: String, default: "", trim: true, maxlength: 500 },
     createdBy: { type: String, default: "Admin" },
     completedBy: { type: String, default: "" },
+    settlementStatus: { type: String, enum: ["unpaid", "paid"], default: "unpaid", required: true },
+    washerPayout: { type: mongoose.Schema.Types.ObjectId, ref: "WasherPayout", default: null },
   },
   { timestamps: true }
 );
 
 washingProcessSchema.index({ status: 1, sentDate: -1, createdAt: -1, _id: -1 });
 washingProcessSchema.index({ washer: 1, status: 1, sentDate: -1 });
+washingProcessSchema.index({ washer: 1, status: 1, settlementStatus: 1, completedDate: 1, _id: 1 });
 
 module.exports = mongoose.model("WashingProcess", washingProcessSchema);

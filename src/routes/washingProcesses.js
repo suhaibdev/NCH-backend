@@ -71,11 +71,12 @@ router.post("/", async (req, res) => {
   const body = req.body || {};
   const sourceError = objectId(body.sourceStockItem, "Invalid source stock item ID.");
   const washerError = objectId(body.washer, "Invalid washer ID.");
+  const destinationError = objectId(body.destinationStockType, "Invalid Washed Output Type ID.");
   const quantity = parsePositiveInteger(body.quantity);
   const rate = parseMoneyToPaise(body.ratePerPiece);
   const sentDate = parseDateOnly(body.sentDate, "Sent date");
   const notes = cleanNotes(body.notes);
-  if (sourceError || washerError || !quantity.valid || !rate.valid || !sentDate.valid || !notes.valid) return res.status(400).json({ message: sourceError?.message || washerError?.message || quantity.message || rate.message || sentDate.message || notes.message });
+  if (sourceError || washerError || destinationError || !quantity.valid || !rate.valid || !sentDate.valid || !notes.valid) return res.status(400).json({ message: sourceError?.message || washerError?.message || destinationError?.message || quantity.message || rate.message || sentDate.message || notes.message });
   const estimatedChargePaise = calculateChargePaise(quantity.value, rate.value);
   if (estimatedChargePaise === null) return res.status(400).json({ message: "Washer charge is too large." });
 
@@ -86,20 +87,23 @@ router.post("/", async (req, res) => {
       const source = await StockItem.findById(body.sourceStockItem).session(session);
       if (!source) throw Object.assign(new Error("Source stock item not found."), { statusCode: 404 });
       if (source.category !== "raw_material" || source.unit !== "pcs" || !source.stockType || !source.supplier || !hasCompleteSize(source.size)) throw Object.assign(new Error("Only supplier-and-size-tracked Raw Material in PCS can be sent to washing."), { statusCode: 400 });
-      const [sourceType, supplier, washer] = await Promise.all([
+      const [sourceType, supplier, washer, destinationType] = await Promise.all([
         StockType.findOne({ _id: source.stockType, category: "raw_material", requiresSupplier: true, requiresSize: true }).session(session).lean(),
         Supplier.findById(source.supplier).select("name").session(session).lean(),
         Washer.findOne({ _id: body.washer, isActive: true }).session(session).lean(),
+        StockType.findOne({ _id: body.destinationStockType, category: "washed_raw_material", requiresSupplier: true, requiresSize: true }).session(session).lean(),
       ]);
       if (!sourceType) throw Object.assign(new Error("Source stock must use a configured Raw Material Stock Type requiring supplier and size."), { statusCode: 400 });
       if (!supplier) throw Object.assign(new Error("Source supplier was not found."), { statusCode: 400 });
       if (!washer) throw Object.assign(new Error("Washer was not found or is inactive."), { statusCode: 400 });
+      if (!destinationType) throw Object.assign(new Error("Select an eligible Washed Output Type."), { statusCode: 400 });
       const updatedSource = await StockItem.findOneAndUpdate({ _id: source._id, currentStock: { $gte: quantity.value } }, { $inc: { currentStock: -quantity.value } }, { new: true, runValidators: true, session });
       if (!updatedSource) throw Object.assign(new Error(`Insufficient source stock. Only ${source.currentStock} PCS is available.`), { statusCode: 400 });
       const created = await WashingProcess.create([{
         sourceStockItem: source._id, sourceStockType: sourceType._id, sourceStockTypeName: sourceType.name,
         supplier: supplier._id, supplierName: supplier.name, size: source.size, unit: "pcs", quantity: quantity.value,
         washer: washer._id, washerName: washer.name, ratePerPiecePaise: rate.value, estimatedChargePaise,
+        destinationStockType: destinationType._id, destinationStockTypeName: destinationType.name,
         sentDate: sentDate.value, notes: notes.value, createdBy: req.user?.id || "Admin",
       }], { session });
       const process = created[0];
@@ -123,9 +127,8 @@ router.post("/", async (req, res) => {
 router.post("/:id/complete", async (req, res) => {
   if (!mongoose.Types.ObjectId.isValid(req.params.id)) return res.status(400).json({ message: "Invalid washing process ID." });
   const body = req.body || {};
-  const typeError = objectId(body.destinationStockType, "Invalid destination Stock Type ID.");
   const completedDate = parseDateOnly(body.completedDate, "Completed date");
-  if (typeError || !completedDate.valid) return res.status(400).json({ message: typeError?.message || completedDate.message });
+  if (!completedDate.valid) return res.status(400).json({ message: completedDate.message });
   const session = await mongoose.startSession();
   let response;
   try {
@@ -134,8 +137,8 @@ router.post("/:id/complete", async (req, res) => {
       if (!process) throw Object.assign(new Error("Washing process not found."), { statusCode: 404 });
       if (process.status !== "in_process") throw Object.assign(new Error("This washing process has already been completed."), { statusCode: 409 });
       if (completedDate.value < process.sentDate) throw Object.assign(new Error("Completed date cannot be before the sent date."), { statusCode: 400 });
-      const destinationType = await StockType.findOne({ _id: body.destinationStockType, category: "washed_raw_material", requiresSupplier: true, requiresSize: true }).session(session).lean();
-      if (!destinationType) throw Object.assign(new Error("Select a configured Washed Raw Material Stock Type requiring supplier and size."), { statusCode: 400 });
+      const destinationType = await StockType.findOne({ _id: process.destinationStockType, category: "washed_raw_material", requiresSupplier: true, requiresSize: true }).session(session).lean();
+      if (!destinationType) throw Object.assign(new Error("The saved Washed Output Type is no longer eligible. Restore its supplier/size tracking before completion."), { statusCode: 400 });
       const identity = { category: "washed_raw_material", stockType: destinationType._id, supplier: process.supplier, size: process.size, unit: process.unit };
       const identityQuery = makeIdentityQuery(identity);
       let matches = await StockItem.find(identityQuery).sort({ createdAt: 1, _id: 1 }).limit(2).session(session);
@@ -161,8 +164,6 @@ router.post("/:id/complete", async (req, res) => {
       process.status = "completed";
       process.completedDate = completedDate.value;
       process.destinationStockItem = destination._id;
-      process.destinationStockType = destinationType._id;
-      process.destinationStockTypeName = destinationType.name;
       process.earnedAmountPaise = process.estimatedChargePaise;
       process.completedBy = req.user?.id || "Admin";
       await process.save({ session });
