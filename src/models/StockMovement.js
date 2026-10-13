@@ -84,6 +84,8 @@ const stockMovementSchema =
 
           "washing_out",
           "washing_in",
+          "washing_sent",
+          "washing_completed",
 
           "manufacturing_use",
           "manufacturing_output",
@@ -142,6 +144,7 @@ const stockMovementSchema =
         enum: [
           "",
           "washing",
+          "washing_process",
           "manufacturing",
           "manual",
           "material_receipt",
