@@ -36,6 +36,30 @@ const cleanOptionalText = (value, field, maximum) => {
   return { valid: true, value: value.trim() };
 };
 
+const cleanBatchNumber = (value) => {
+  if (typeof value !== "string") {
+    return { valid: false, message: "Batch No. is required." };
+  }
+
+  const batchNumber = value.trim().replace(/\s+/g, " ");
+  if (!batchNumber) {
+    return { valid: false, message: "Batch No. is required." };
+  }
+
+  if (batchNumber.length > 100) {
+    return { valid: false, message: "Batch No. must be 100 characters or fewer." };
+  }
+
+  return {
+    valid: true,
+    value: batchNumber,
+    normalizedValue: batchNumber.toLowerCase(),
+  };
+};
+
+const hasValidLabelUsage = (input, quantityProduced) =>
+  input.quantityUsed === quantityProduced && input.wastage === 0;
+
 const validateManufacturingPayload = (body = {}) => {
   if (!Array.isArray(body.inputs) || body.inputs.length === 0) {
     return { valid: false, message: "At least one Raw or Washed input is required." };
@@ -46,13 +70,15 @@ const validateManufacturingPayload = (body = {}) => {
   }
 
   const manufacturingDate = parseDateOnly(body.manufacturingDate, "Manufacturing date");
+  const batchNumber = cleanBatchNumber(body.batchNumber);
   const notes = cleanOptionalText(body.notes, "Notes", 500);
   const outputQuantity = parsePositiveInteger(body.output.quantityProduced, "Quantity produced");
 
-  if (!manufacturingDate.valid || !notes.valid || !outputQuantity.valid) {
+  if (!manufacturingDate.valid || !batchNumber.valid || !notes.valid || !outputQuantity.valid) {
     return {
       valid: false,
-      message: manufacturingDate.message || notes.message || outputQuantity.message,
+      message:
+        manufacturingDate.message || batchNumber.message || notes.message || outputQuantity.message,
     };
   }
 
@@ -97,6 +123,8 @@ const validateManufacturingPayload = (body = {}) => {
     valid: true,
     value: {
       manufacturingDate: manufacturingDate.value,
+      batchNumber: batchNumber.value,
+      normalizedBatchNumber: batchNumber.normalizedValue,
       notes: notes.value,
       inputs,
       output: {
@@ -111,7 +139,9 @@ module.exports = {
   INPUT_CATEGORIES,
   canReverseManufacturing,
   canReverseFinishedOutput,
+  cleanBatchNumber,
   cleanOptionalText,
+  hasValidLabelUsage,
   hasSufficientStock,
   isAllowedInputCategory,
   isFinishedGoodsCategory,

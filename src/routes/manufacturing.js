@@ -12,6 +12,7 @@ const {
   canReverseManufacturing,
   canReverseFinishedOutput,
   cleanOptionalText,
+  hasValidLabelUsage,
   isAllowedInputCategory,
   isFinishedGoodsCategory,
   validateManufacturingPayload,
@@ -43,6 +44,16 @@ const getNumber = async (manufacturingDate, session) => {
   );
 
   return `MF-${year}-${String(counter.sequence).padStart(4, "0")}`;
+};
+
+const getConfiguredLabelStockType = (session) => {
+  const query = StockType.findOne({
+    category: "raw_material",
+    normalizedName: "label",
+  }).select("name normalizedName category");
+
+  if (session) query.session(session);
+  return query.lean();
 };
 
 const getSnapshots = async (item, session) => {
@@ -109,14 +120,24 @@ router.get("/stock-items", async (req, res) => {
       .trim()
       .slice(0, 100);
 
-    if (!page || !limit || !["input", "output"].includes(kind)) {
+    if (!page || !limit || !["input", "output", "washed", "label"].includes(kind)) {
       return res.status(400).json({ message: "Use a valid kind, page and limit." });
     }
 
-    const query =
-      kind === "input"
-        ? { category: { $in: INPUT_CATEGORIES }, currentStock: { $gt: 0 } }
-        : { category: "finished_goods" };
+    const labelStockType = kind === "label" ? await getConfiguredLabelStockType() : null;
+    let query;
+
+    if (kind === "output") {
+      query = { category: "finished_goods" };
+    } else if (kind === "washed") {
+      query = { category: "washed_raw_material", currentStock: { $gt: 0 } };
+    } else if (kind === "label") {
+      query = labelStockType
+        ? { category: "raw_material", stockType: labelStockType._id }
+        : { _id: null };
+    } else {
+      query = { category: { $in: INPUT_CATEGORIES }, currentStock: { $gt: 0 } };
+    }
 
     if (search) {
       query.productName = { $regex: escapeRegex(search), $options: "i" };
@@ -137,6 +158,9 @@ router.get("/stock-items", async (req, res) => {
     return res.json({
       items,
       pagination: { page, limit, totalItems, totalPages: Math.ceil(totalItems / limit) },
+      labelStockType: labelStockType
+        ? { _id: labelStockType._id, name: labelStockType.name }
+        : null,
     });
   } catch (err) {
     console.error("GET MANUFACTURING STOCK ITEMS ERROR:", err);
@@ -206,7 +230,35 @@ router.post("/", async (req, res) => {
   try {
     await session.withTransaction(async () => {
       const createdBy = req.user?.id || "Admin";
+      const finishedItem = await StockItem.findById(payload.output.finishedStockItem).session(
+        session
+      );
+      if (!finishedItem) throw requestError(404, "Finished Goods output item was not found.");
+      if (!isFinishedGoodsCategory(finishedItem.category)) {
+        throw requestError(400, "Manufacturing output must be a Finished Goods item.");
+      }
+      if (finishedItem.supplier) {
+        throw requestError(400, "Finished Goods output cannot have supplier ownership.");
+      }
+
+      const duplicateBatch = await ManufacturingEntry.findOne({
+        normalizedBatchNumber: payload.normalizedBatchNumber,
+      })
+        .select("_id")
+        .session(session)
+        .lean();
+      if (duplicateBatch) {
+        throw requestError(409, `Batch No. ${payload.batchNumber} already exists.`);
+      }
+
+      const labelStockType = await getConfiguredLabelStockType(session);
+      if (!labelStockType) {
+        throw requestError(400, "No Label Stock Type is configured.");
+      }
+
       const inputRecords = [];
+      let labelRecord = null;
+      let hasWashedInput = false;
 
       for (const input of payload.inputs) {
         const item = await StockItem.findById(input.stockItem).session(session);
@@ -218,36 +270,74 @@ router.post("/", async (req, res) => {
           );
         }
 
+        const isLabel = String(item.stockType || "") === String(labelStockType._id);
+        if (isLabel) {
+          if (labelRecord) {
+            throw requestError(400, "Select only one Label input.");
+          }
+          if (item.category !== "raw_material" || item.unit !== "pcs") {
+            throw requestError(400, "The configured Label item must be a Raw Material in PCS.");
+          }
+          labelRecord = { item, input };
+        }
+
+        if (item.category === "washed_raw_material") {
+          hasWashedInput = true;
+        }
+
         const snapshots = await getSnapshots(item, session);
+        inputRecords.push({
+          item,
+          input,
+          snapshot: inputSnapshot(item, snapshots, input),
+          isLabel,
+        });
+      }
+
+      if (!hasWashedInput) {
+        throw requestError(400, "At least one Washed Raw Material input is required.");
+      }
+      if (!labelRecord) {
+        throw requestError(400, "A Label input is required.");
+      }
+      if (!hasValidLabelUsage(labelRecord.input, payload.output.quantityProduced)) {
+        throw requestError(
+          400,
+          "Label Quantity Used must exactly match Finished Quantity, with zero wastage."
+        );
+      }
+      if (labelRecord.item.currentStock < payload.output.quantityProduced) {
+        throw requestError(
+          400,
+          `Insufficient Label stock. Required ${payload.output.quantityProduced} PCS, available ${labelRecord.item.currentStock} PCS.`
+        );
+      }
+
+      for (const record of inputRecords) {
         const updatedItem = await StockItem.findOneAndUpdate(
           {
-            _id: item._id,
+            _id: record.item._id,
             category: { $in: INPUT_CATEGORIES },
-            currentStock: { $gte: input.quantityUsed },
+            currentStock: { $gte: record.input.quantityUsed },
           },
-          { $inc: { currentStock: -input.quantityUsed } },
+          { $inc: { currentStock: -record.input.quantityUsed } },
           { new: true, runValidators: true, session }
         );
 
         if (!updatedItem) {
+          if (record.isLabel) {
+            throw requestError(
+              400,
+              `Insufficient Label stock. Required ${record.input.quantityUsed} PCS, available ${record.item.currentStock} PCS.`
+            );
+          }
           throw requestError(
             400,
-            `Insufficient stock for ${item.productName}. ${item.currentStock} ${item.unit} is available.`
+            `Insufficient stock for ${record.item.productName}. ${record.item.currentStock} ${record.item.unit} is available.`
           );
         }
 
-        inputRecords.push({ item, updatedItem, snapshot: inputSnapshot(item, snapshots, input) });
-      }
-
-      const finishedItem = await StockItem.findById(payload.output.finishedStockItem).session(
-        session
-      );
-      if (!finishedItem) throw requestError(404, "Finished Goods output item was not found.");
-      if (!isFinishedGoodsCategory(finishedItem.category)) {
-        throw requestError(400, "Manufacturing output must be a Finished Goods item.");
-      }
-      if (finishedItem.supplier) {
-        throw requestError(400, "Finished Goods output cannot have supplier ownership.");
+        record.updatedItem = updatedItem;
       }
 
       const finishedType = finishedItem.stockType
@@ -275,6 +365,8 @@ router.post("/", async (req, res) => {
           [
             {
               manufacturingNumber,
+              batchNumber: payload.batchNumber,
+              normalizedBatchNumber: payload.normalizedBatchNumber,
               finishedItem: finishedItem._id,
               finishedProductName: finishedItem.productName,
               finishedUnit: finishedItem.unit,

@@ -3,7 +3,9 @@ const ManufacturingEntry = require("../models/ManufacturingEntry");
 const {
   canReverseManufacturing,
   canReverseFinishedOutput,
+  cleanBatchNumber,
   hasSufficientStock,
+  hasValidLabelUsage,
   isAllowedInputCategory,
   isFinishedGoodsCategory,
   validateManufacturingPayload,
@@ -11,6 +13,7 @@ const {
 
 const validPayload = {
   manufacturingDate: "2026-10-13",
+  batchNumber: " BATCH-100 ",
   notes: "Manual production entry",
   inputs: [
     { stockItem: "507f1f77bcf86cd799439011", quantityUsed: 10, wastage: 2 },
@@ -23,6 +26,21 @@ assert.equal(
   validateManufacturingPayload(validPayload).valid,
   true,
   "multiple valid inputs are accepted"
+);
+assert.equal(
+  validateManufacturingPayload(validPayload).value.batchNumber,
+  "BATCH-100",
+  "Batch No. is trimmed and saved"
+);
+assert.equal(
+  validateManufacturingPayload({ ...validPayload, batchNumber: "   " }).valid,
+  false,
+  "blank Batch No. is rejected"
+);
+assert.equal(
+  cleanBatchNumber(" Batch 100 ").normalizedValue,
+  "batch 100",
+  "Batch duplicate comparisons use normalized surrounding whitespace"
 );
 assert.equal(isAllowedInputCategory("raw_material"), true, "Raw Material is an allowed input");
 assert.equal(
@@ -43,6 +61,21 @@ assert.equal(canReverseFinishedOutput(8, 8), true, "available finished output ca
 assert.equal(canReverseFinishedOutput(7, 8), false, "insufficient finished output blocks reversal");
 assert.equal(canReverseManufacturing("completed"), true, "completed entry can be reversed once");
 assert.equal(canReverseManufacturing("reversed"), false, "second reversal is rejected");
+assert.equal(
+  hasValidLabelUsage({ quantityUsed: 100, wastage: 0 }, 100),
+  true,
+  "Label Quantity Used matches numeric Finished Quantity"
+);
+assert.equal(
+  hasValidLabelUsage({ quantityUsed: 100, wastage: 0 }, 125),
+  false,
+  "changing Finished Quantity requires the same numeric Label quantity"
+);
+assert.equal(
+  hasValidLabelUsage({ quantityUsed: 100, wastage: 1 }, 100),
+  false,
+  "Label wastage must remain zero"
+);
 assert.equal(
   validateManufacturingPayload({
     ...validPayload,
@@ -78,6 +111,8 @@ assert.equal(
 
 const snapshotEntry = new ManufacturingEntry({
   manufacturingNumber: "MF-2026-0001",
+  batchNumber: "BATCH-100",
+  normalizedBatchNumber: "batch-100",
   finishedItem: "507f1f77bcf86cd799439013",
   finishedProductName: "Finished Bandage",
   finishedUnit: "pcs",
@@ -125,5 +160,6 @@ assert.equal(
   "Finished Bandage",
   "output snapshot is preserved"
 );
+assert.equal(snapshotEntry.batchNumber, "BATCH-100", "Batch No. snapshot is preserved");
 
 console.log("Manufacturing helper tests passed.");

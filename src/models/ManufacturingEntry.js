@@ -157,6 +157,23 @@ const manufacturingEntrySchema = new mongoose.Schema(
       unique: true,
     },
 
+    // New entries require this through the Manufacturing route. A default keeps
+    // pre-batch V1 history readable without a destructive historical migration.
+    batchNumber: {
+      type: String,
+      default: "",
+      trim: true,
+      maxlength: 100,
+    },
+
+    normalizedBatchNumber: {
+      type: String,
+      default: "",
+      trim: true,
+      lowercase: true,
+      maxlength: 100,
+    },
+
     finishedItem: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "StockItem",
@@ -267,6 +284,10 @@ const manufacturingEntrySchema = new mongoose.Schema(
 
 manufacturingEntrySchema.index({
   manufacturingDate: -1,
+});
+
+manufacturingEntrySchema.index({
+  normalizedBatchNumber: 1,
 });
 
 manufacturingEntrySchema.index(
