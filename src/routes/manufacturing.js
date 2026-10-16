@@ -7,6 +7,7 @@ const StockItem = require("../models/StockItem");
 const StockMovement = require("../models/StockMovement");
 const StockType = require("../models/StockType");
 const Supplier = require("../models/Supplier");
+const { buildManufacturingHistoryQuery } = require("../utils/manufacturingHistory");
 const {
   INPUT_CATEGORIES,
   canReverseManufacturing,
@@ -170,19 +171,21 @@ router.get("/stock-items", async (req, res) => {
 
 router.get("/", async (req, res) => {
   try {
-    const page = parsePage(req.query.page, 1, 1000000);
-    const limit = parsePage(req.query.limit, 20, 100);
-    if (!page || !limit) {
-      return res.status(400).json({ message: "Page and limit must be positive integers." });
-    }
+    const historyQuery = buildManufacturingHistoryQuery(req.query);
+    if (!historyQuery.valid) return res.status(400).json({ message: historyQuery.message });
+
+    const { page, limit, filters } = historyQuery.value;
 
     const [items, totalItems] = await Promise.all([
-      ManufacturingEntry.find()
+      ManufacturingEntry.find(filters)
+        .select(
+          "batchNumber manufacturingNumber manufacturingDate finishedProductName finishedUnit quantityManufactured output materials notes status reversed reversedAt reverseReason reversedBy createdBy createdAt"
+        )
         .sort({ manufacturingDate: -1, createdAt: -1, _id: -1 })
         .skip((page - 1) * limit)
         .limit(limit)
         .lean(),
-      ManufacturingEntry.countDocuments(),
+      ManufacturingEntry.countDocuments(filters),
     ]);
 
     return res.json({
@@ -192,6 +195,44 @@ router.get("/", async (req, res) => {
   } catch (err) {
     console.error("GET MANUFACTURING HISTORY ERROR:", err);
     return res.status(500).json({ message: "Unable to load manufacturing history." });
+  }
+});
+
+router.get("/history-filter-options", async (_req, res) => {
+  try {
+    const sizes = await ManufacturingEntry.aggregate([
+      { $unwind: "$materials" },
+      {
+        $match: {
+          "materials.size.lengthValue": { $ne: null },
+          "materials.size.lengthUnit": { $ne: null },
+          "materials.size.widthValue": { $ne: null },
+          "materials.size.widthUnit": { $ne: null },
+        },
+      },
+      {
+        $group: {
+          _id: {
+            lengthValue: "$materials.size.lengthValue",
+            lengthUnit: "$materials.size.lengthUnit",
+            widthValue: "$materials.size.widthValue",
+            widthUnit: "$materials.size.widthUnit",
+          },
+        },
+      },
+      { $sort: { "_id.lengthValue": 1, "_id.widthValue": 1 } },
+      { $limit: 100 },
+    ]);
+
+    return res.json({
+      sizes: sizes.map(({ _id: size }) => ({
+        key: `${size.lengthValue}|${size.lengthUnit}|${size.widthValue}|${size.widthUnit}`,
+        label: `${size.lengthValue} ${size.lengthUnit} × ${size.widthValue} ${size.widthUnit}`,
+      })),
+    });
+  } catch (err) {
+    console.error("GET MANUFACTURING HISTORY FILTER OPTIONS ERROR:", err);
+    return res.status(500).json({ message: "Unable to load manufacturing history filters." });
   }
 });
 

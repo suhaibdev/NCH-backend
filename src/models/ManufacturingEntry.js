@@ -302,4 +302,12 @@ manufacturingEntrySchema.index({
   manufacturingDate: -1,
 });
 
+manufacturingEntrySchema.index({
+  "materials.size.lengthValue": 1,
+  "materials.size.lengthUnit": 1,
+  "materials.size.widthValue": 1,
+  "materials.size.widthUnit": 1,
+  manufacturingDate: -1,
+});
+
 module.exports = mongoose.model("ManufacturingEntry", manufacturingEntrySchema);
