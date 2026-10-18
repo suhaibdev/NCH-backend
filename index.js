@@ -2,12 +2,21 @@ const express = require("express");
 const dotenv = require("dotenv");
 const cors = require("cors");
 const mongoose = require("mongoose");
+const createDatabaseReadinessMiddleware = require("./src/middleware/databaseReadiness");
+const {
+  createRequestTiming,
+  elapsedMilliseconds,
+  formatOperationTiming,
+  getHealthResponse,
+} = require("./src/utils/operationalStatus");
 
 // Load environment variables from .env file
 dotenv.config();
 
 const app = express();
 const port = process.env.PORT || 5000;
+const startupStartedAt = process.hrtime.bigint();
+const isDatabaseReady = () => mongoose.connection.readyState === 1;
 
 // Middleware
 app.use(cors());
@@ -36,6 +45,15 @@ app.get("/", (req, res) => {
   res.send("Backend server is running!");
 });
 
+app.get("/api/health", (req, res) => {
+  const health = getHealthResponse(isDatabaseReady());
+  return res.status(health.statusCode).json(health.body);
+});
+
+app.post("/api/auth/login", createRequestTiming("POST /api/auth/login"));
+app.get("/api/dashboard", createRequestTiming("GET /api/dashboard"));
+app.use("/api", createDatabaseReadinessMiddleware(isDatabaseReady));
+
 // Register API routes
 app.use("/api/auth", authRoutes);
 app.use("/api/dashboard", verifyToken, authorizeRoles("admin"), dashboardRoutes);
@@ -52,22 +70,69 @@ app.use("/api/attendance", verifyToken, authorizeRoles("admin"), attendanceRoute
 app.use("/api/payout", verifyToken, authorizeRoles("admin"), payoutRoutes);
 app.use("/api/stock", verifyToken, authorizeRoles("admin"), stockRoutes);
 
-// Connect to MongoDB with better error handling
-mongoose
-  .connect(process.env.MONGODB_URI, {
-    useNewUrlParser: true,
-    useUnifiedTopology: true,
-  })
-  .then(() => {
-    console.log("✅ Connected to MongoDB");
-  })
-  .catch((err) => {
-    console.error("❌ MongoDB Connection Error:", err.message);
-    console.error("Make sure MONGODB_URI environment variable is set correctly");
+mongoose.connection.on("disconnected", () => {
+  console.error("MongoDB disconnected; API readiness is unavailable.");
+});
+
+mongoose.connection.on("error", () => {
+  console.error("MongoDB connection error; API readiness may be unavailable.");
+});
+
+const listen = () =>
+  new Promise((resolve, reject) => {
+    const server = app.listen(port, () => resolve(server));
+    server.once("error", reject);
   });
 
-// Start server regardless of MongoDB connection
-app.listen(port, () => {
-  console.log(`🚀 Server is running on port: ${port}`);
-  console.log(`Environment: ${process.env.NODE_ENV || "development"}`);
-});
+const startServer = async () => {
+  if (!process.env.MONGODB_URI) {
+    console.error("MONGODB_URI is not configured; application server did not start.");
+    return null;
+  }
+
+  const databaseStartedAt = process.hrtime.bigint();
+
+  try {
+    await mongoose.connect(process.env.MONGODB_URI, {
+      serverSelectionTimeoutMS: 10_000,
+    });
+
+    console.log(formatOperationTiming("MongoDB connected", elapsedMilliseconds(databaseStartedAt)));
+
+    const server = await listen();
+
+    console.log(`Server is running on port: ${port}`);
+    console.log(`Environment: ${process.env.NODE_ENV || "development"}`);
+    console.log(
+      formatOperationTiming("Backend startup completed", elapsedMilliseconds(startupStartedAt))
+    );
+
+    return server;
+  } catch (error) {
+    console.error(
+      formatOperationTiming(
+        "MongoDB connection or server startup failed",
+        elapsedMilliseconds(databaseStartedAt)
+      )
+    );
+    console.error(
+      "Application server did not start; check database configuration and availability."
+    );
+    await mongoose.disconnect().catch(() => undefined);
+    return null;
+  }
+};
+
+if (require.main === module) {
+  startServer().then((server) => {
+    if (!server) {
+      process.exitCode = 1;
+    }
+  });
+}
+
+module.exports = {
+  app,
+  isDatabaseReady,
+  startServer,
+};
