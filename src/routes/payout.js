@@ -1812,35 +1812,65 @@ router.patch("/:id/status", async (req, res) => {
 });
 
 // ===============================================
-// DELETE PAYOUT
+// DELETE BULK PAYOUT
+// ===============================================
+
+router.delete('/bulk/:id', async (req, res) => {
+  if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+    return res.status(400).json({ message: 'Invalid bulk payout ID.' });
+  }
+
+  const session = await mongoose.startSession();
+  try {
+    let deletedPayout;
+    await session.withTransaction(async () => {
+      const payout = await BulkPayout.findById(req.params.id).session(session);
+      if (!payout) {
+        const error = new Error('Bulk payout not found.');
+        error.status = 404;
+        throw error;
+      }
+      deletedPayout = await BulkPayout.findByIdAndDelete(payout._id, { session });
+    });
+
+    return res.json({
+      message: 'Bulk payout permanently deleted. The affected period is eligible for payout again.',
+      employeeCount: deletedPayout.employeeCount,
+    });
+  } catch (err) {
+    return res.status(err.status || 500).json({ message: err.message || 'Unable to delete bulk payout.' });
+  } finally {
+    await session.endSession();
+  }
+});
+
+// ===============================================
+// DELETE SINGLE PAYOUT
 // ===============================================
 
 router.delete("/:id", async (req, res) => {
-
-  try {
-
-    const payout = await Payout.findByIdAndDelete(req.params.id);
-
-    if (!payout) {
-      return res.status(404).json({
-        message: "Payout not found",
-      });
-    }
-
-    res.json({
-      message: "Payout deleted successfully",
-    });
-
-  } catch (err) {
-
-    console.error(err);
-
-    res.status(500).json({
-      message: err.message ||'DELETE PAYOUT ERROR.',
-    });
-
+  if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+    return res.status(400).json({ message: 'Invalid payout ID.' });
   }
 
+  const session = await mongoose.startSession();
+  try {
+    await session.withTransaction(async () => {
+      const payout = await Payout.findById(req.params.id).session(session);
+      if (!payout) {
+        const error = new Error('Payout not found.');
+        error.status = 404;
+        throw error;
+      }
+      await Payout.deleteOne({ _id: payout._id }).session(session);
+    });
+
+    return res.json({ message: 'Payout permanently deleted. The affected period is eligible for payout again.' });
+  } catch (err) {
+    return res.status(err.status || 500).json({ message: err.message || 'Unable to delete payout.' });
+  } finally {
+    await session.endSession();
+  }
 });
 
 module.exports = router;
