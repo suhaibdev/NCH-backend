@@ -8,6 +8,11 @@ const Employee = require('../models/Employee');
 const Attendance = require('../models/Attendance');
 const PayoutCounter = require('../models/PayoutCounter');
 const {
+  buildPayoutHistoryByEmployee,
+  findOverlappingPayout,
+  getOverlapDetails,
+} = require('../utils/payoutOverlap');
+const {
   STANDARD_WORK_HOURS,
   calculateNetSalary,
   getWorkingTime,
@@ -162,34 +167,6 @@ const groupByEmployee = (records) => {
   });
 
   return grouped;
-};
-
-/**
- * Finds an existing payout that overlaps the requested payroll period.
- */
-const findOverlappingPayout = (
-  payoutRecords,
-  start,
-  end
-) => {
-  return payoutRecords.find((payout) => {
-    if (!payout.startDate || !payout.endDate) {
-      return false;
-    }
-
-    const payoutStart = new Date(
-      payout.startDate
-    );
-
-    const payoutEnd = new Date(
-      payout.endDate
-    );
-
-    return (
-      payoutStart <= end &&
-      payoutEnd >= start
-    );
-  });
 };
 
 /**
@@ -491,7 +468,8 @@ router.post('/bulk-preview', async (req, res) => {
      */
     const [
       historicalAttendance,
-      existingPayouts,
+      legacyPayouts,
+      bulkPayouts,
     ] = await Promise.all([
       Attendance.find({
         employee: {
@@ -507,6 +485,12 @@ router.post('/bulk-preview', async (req, res) => {
           $in: activeEmployeeIds,
         },
       }).lean(),
+
+      BulkPayout.find({
+        'employees.employee': {
+          $in: activeEmployeeIds,
+        },
+      }).lean(),
     ]);
 
     const attendanceByEmployee =
@@ -515,8 +499,9 @@ router.post('/bulk-preview', async (req, res) => {
       );
 
     const payoutsByEmployee =
-      groupByEmployee(
-        existingPayouts
+      buildPayoutHistoryByEmployee(
+        legacyPayouts,
+        bulkPayouts
       );
 
     const previewEmployees =
@@ -678,24 +663,9 @@ router.post('/bulk-preview', async (req, res) => {
           alreadyCreated,
 
           existingPayout:
-            overlappingPayout
-              ? {
-                  payoutId:
-                    overlappingPayout._id,
-
-                  startDate:
-                    overlappingPayout.startDate,
-
-                  endDate:
-                    overlappingPayout.endDate,
-
-                  status:
-                    overlappingPayout.status,
-
-                  netSalary:
-                    overlappingPayout.netSalary,
-                }
-              : null,
+            getOverlapDetails(
+              overlappingPayout
+            ),
         };
       });
 
@@ -1391,22 +1361,22 @@ router.post('/bulk', async (req, res) => {
 
       const employeeById = new Map(employees.map((employee) => [String(employee._id), employee]));
       const attendanceByEmployee = groupByEmployee(attendance);
-      const legacyByEmployee = groupByEmployee(legacyPayouts);
+      const payoutsByEmployee = buildPayoutHistoryByEmployee(legacyPayouts, bulkPayouts);
       const lines = payouts.map((request) => {
         const employeeId = String(request.employeeId);
         const employee = employeeById.get(employeeId);
         const employeeAttendance = attendanceByEmployee.get(employeeId) || [];
-        const history = [
-          ...(legacyByEmployee.get(employeeId) || []),
-          ...bulkPayouts.flatMap((payout) => (payout.employees || [])
-            .filter((line) => String(line.employee) === employeeId)
-            .map((line) => ({ ...line, startDate: payout.startDate, endDate: payout.endDate }))),
-        ];
+        const history = payoutsByEmployee.get(employeeId) || [];
         if (!employeeAttendance.some((record) => record.date >= range.start && record.date <= range.end)) {
           throw new Error(`${employee.name} has no attendance marked for this payroll period.`);
         }
-        if (findOverlappingPayout(history, range.start, range.end)) {
-          throw new Error(`${employee.name} already has a payout for an overlapping period.`);
+        const overlap = findOverlappingPayout(history, range.start, range.end);
+        if (overlap) {
+          const error = new Error(`${employee.name} already has a payout for an overlapping period.`);
+          error.code = 'PAYOUT_OVERLAP';
+          error.employeeName = employee.name;
+          error.overlap = getOverlapDetails(overlap);
+          throw error;
         }
         const hourlyRate = roundCurrency(employee.baseDailySalary / STANDARD_WORK_HOURS);
         const payroll = calculatePayrollMetrics(employeeAttendance, range.start, range.end, hourlyRate);
@@ -1447,6 +1417,15 @@ router.post('/bulk', async (req, res) => {
     });
     return res.status(201).json({ payout: savedPayout });
   } catch (err) {
+    if (err.code === 'PAYOUT_OVERLAP') {
+      return res.status(409).json({
+        message: err.message,
+        code: err.code,
+        employeeName: err.employeeName,
+        overlap: err.overlap,
+      });
+    }
+
     return res.status(400).json({ message: err.message || 'Unable to create bulk payout.' });
   } finally {
     await session.endSession();
