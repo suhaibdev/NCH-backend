@@ -12,6 +12,7 @@ const {
   findOverlappingPayout,
   getOverlapDetails,
 } = require('../utils/payoutOverlap');
+const { getHistoryPagination, serializeBulkHistoryItem } = require('../utils/payoutHistory');
 const {
   STANDARD_WORK_HOURS,
   calculateNetSalary,
@@ -236,15 +237,34 @@ router.get('/', async (req, res) => {
 
 router.get('/bulk-history', async (req, res) => {
   try {
-    const page = Math.max(1, Number.parseInt(req.query.page, 10) || 1);
-    const limit = Math.min(20, Math.max(1, Number.parseInt(req.query.limit, 10) || 10));
+    const { page, limit } = getHistoryPagination(req.query);
     const [items, total] = await Promise.all([
       BulkPayout.find().sort({ paidOn: -1, _id: -1 }).skip((page - 1) * limit).limit(limit).lean(),
       BulkPayout.countDocuments(),
     ]);
-    res.json({ items, page, limit, total, totalPages: Math.max(1, Math.ceil(total / limit)) });
+    const safeItems = items.map(serializeBulkHistoryItem);
+    res.json({ items: safeItems, page, limit, total, totalPages: Math.max(1, Math.ceil(total / limit)) });
   } catch (err) {
     res.status(500).json({ message: 'Unable to load bulk payout history.' });
+  }
+});
+
+router.get('/single-history', async (req, res) => {
+  try {
+    const { page, limit } = getHistoryPagination(req.query);
+    const [items, total] = await Promise.all([
+      Payout.find()
+        .select('employee startDate endDate netSalary paidOn paymentMethod status totalDaysWorked totalHoursWorked fullWorkingDays remainingWorkingHours grossSalary outstandingAdvanceAfter advanceDeducted deductions')
+        .populate('employee', 'name')
+        .sort({ paidOn: -1, _id: -1 })
+        .skip((page - 1) * limit)
+        .limit(limit)
+        .lean(),
+      Payout.countDocuments(),
+    ]);
+    res.json({ items, page, limit, total, totalPages: Math.max(1, Math.ceil(total / limit)) });
+  } catch (err) {
+    res.status(500).json({ message: 'Unable to load single payout history.' });
   }
 });
 
