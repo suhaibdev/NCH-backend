@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const Payout = require('../models/Payout');
+const BulkPayout = require('../models/BulkPayout');
 const { startOfDay, endOfDay } = require('date-fns');
 const mongoose = require('mongoose');
 const Employee = require('../models/Employee');
@@ -226,6 +227,17 @@ const generatePayoutNumber = async (session = null) => {
   return `NCH-PAY-${year}-${sequence}`;
 };
 
+const generateBulkPayoutNumber = async (session) => {
+  const year = new Date().getFullYear();
+  const counter = await PayoutCounter.findOneAndUpdate(
+    { _id: `bulk-payout-${year}` },
+    { $inc: { sequence: 1 } },
+    { new: true, upsert: true, setDefaultsOnInsert: true, session }
+  );
+
+  return `NCH-BULK-${year}-${String(counter.sequence).padStart(4, '0')}`;
+};
+
 // ===============================================
 // GET ALL PAYOUTS
 // ===============================================
@@ -242,6 +254,20 @@ router.get('/', async (req, res) => {
     res.status(500).json({
       message: err.message,
     });
+  }
+});
+
+router.get('/bulk-history', async (req, res) => {
+  try {
+    const page = Math.max(1, Number.parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(20, Math.max(1, Number.parseInt(req.query.limit, 10) || 10));
+    const [items, total] = await Promise.all([
+      BulkPayout.find().sort({ paidOn: -1, _id: -1 }).skip((page - 1) * limit).limit(limit).lean(),
+      BulkPayout.countDocuments(),
+    ]);
+    res.json({ items, page, limit, total, totalPages: Math.max(1, Math.ceil(total / limit)) });
+  } catch (err) {
+    res.status(500).json({ message: 'Unable to load bulk payout history.' });
   }
 });
 
@@ -751,7 +777,7 @@ router.post('/bulk-preview', async (req, res) => {
 // CREATE BULK PAYOUTS
 // ===============================================
 
-router.post('/bulk', async (req, res) => {
+router.post('/bulk-legacy', async (req, res) => {
   try {
     const {
       startDate,
@@ -1329,6 +1355,104 @@ router.post('/bulk', async (req, res) => {
 // ===============================================
 // CREATE PAYOUT
 // ===============================================
+router.post('/bulk', async (req, res) => {
+  const { startDate, endDate, payrollPeriod = {}, payouts } = req.body;
+  const range = validatePayrollRange(startDate, endDate);
+
+  if (!range.valid) {
+    return res.status(range.status).json({ message: range.message });
+  }
+  if (!Array.isArray(payouts) || payouts.length === 0) {
+    return res.status(400).json({ message: 'Please select at least one employee payout.' });
+  }
+  if (payouts.some((item) => !mongoose.Types.ObjectId.isValid(item.employeeId))) {
+    return res.status(400).json({ message: 'Each selected employee must be valid.' });
+  }
+
+  const ids = payouts.map((item) => String(item.employeeId));
+  if (new Set(ids).size !== ids.length) {
+    return res.status(400).json({ message: 'An employee can only appear once in a bulk payout.' });
+  }
+
+  const session = await mongoose.startSession();
+  try {
+    let savedPayout;
+    await session.withTransaction(async () => {
+      const objectIds = ids.map((id) => new mongoose.Types.ObjectId(id));
+      const [employees, attendance, legacyPayouts, bulkPayouts] = await Promise.all([
+        Employee.find({ _id: { $in: objectIds }, isActive: true }).session(session).lean(),
+        Attendance.find({ employee: { $in: objectIds }, date: { $lte: range.end } }).session(session).lean(),
+        Payout.find({ employee: { $in: objectIds } }).session(session).lean(),
+        BulkPayout.find({ 'employees.employee': { $in: objectIds } }).session(session).lean(),
+      ]);
+      if (employees.length !== objectIds.length) {
+        throw new Error('Every selected employee must exist and be active.');
+      }
+
+      const employeeById = new Map(employees.map((employee) => [String(employee._id), employee]));
+      const attendanceByEmployee = groupByEmployee(attendance);
+      const legacyByEmployee = groupByEmployee(legacyPayouts);
+      const lines = payouts.map((request) => {
+        const employeeId = String(request.employeeId);
+        const employee = employeeById.get(employeeId);
+        const employeeAttendance = attendanceByEmployee.get(employeeId) || [];
+        const history = [
+          ...(legacyByEmployee.get(employeeId) || []),
+          ...bulkPayouts.flatMap((payout) => (payout.employees || [])
+            .filter((line) => String(line.employee) === employeeId)
+            .map((line) => ({ ...line, startDate: payout.startDate, endDate: payout.endDate }))),
+        ];
+        if (!employeeAttendance.some((record) => record.date >= range.start && record.date <= range.end)) {
+          throw new Error(`${employee.name} has no attendance marked for this payroll period.`);
+        }
+        if (findOverlappingPayout(history, range.start, range.end)) {
+          throw new Error(`${employee.name} already has a payout for an overlapping period.`);
+        }
+        const hourlyRate = roundCurrency(employee.baseDailySalary / STANDARD_WORK_HOURS);
+        const payroll = calculatePayrollMetrics(employeeAttendance, range.start, range.end, hourlyRate);
+        const advanceStatus = calculateAdvanceStatus(
+          employeeAttendance,
+          history.filter((payout) => new Date(payout.endDate) <= range.end)
+        );
+        const advanceDeducted = Number(request.advanceDeducted || 0);
+        const deductions = Number(request.deductions || 0);
+        if (!Number.isFinite(advanceDeducted) || advanceDeducted < 0 || advanceDeducted > advanceStatus.remainingAdvance) {
+          throw new Error(`${employee.name} has an invalid advance recovery.`);
+        }
+        if (!Number.isFinite(deductions) || deductions < 0) {
+          throw new Error(`${employee.name} has an invalid other deduction.`);
+        }
+        const netSalary = calculateNetSalary(payroll.grossSalary, advanceDeducted, deductions);
+        if (netSalary < 0) throw new Error(`${employee.name} has deductions greater than gross salary.`);
+        return {
+          employee: employee._id, employeeName: employee.name, totalDaysWorked: payroll.totalDaysWorked,
+          totalHoursWorked: payroll.totalHoursWorked, fullWorkingDays: payroll.workingTime.fullWorkingDays,
+          remainingWorkingHours: payroll.workingTime.remainingWorkingHours, overtimeHours: payroll.overtimeHours,
+          dailySalary: employee.baseDailySalary, hourlyRate, baseSalary: payroll.baseSalary,
+          overtimeAmount: payroll.overtimeAmount, grossSalary: payroll.grossSalary,
+          outstandingAdvanceBefore: advanceStatus.remainingAdvance, advanceDeducted,
+          outstandingAdvanceAfter: roundCurrency(advanceStatus.remainingAdvance - advanceDeducted), deductions,
+          netSalary, paymentMethod: VALID_PAYMENT_METHODS.includes(request.paymentMethod) ? request.paymentMethod : 'cash',
+        };
+      });
+      const total = (key) => roundCurrency(lines.reduce((sum, line) => sum + Number(line[key] || 0), 0));
+      [savedPayout] = await BulkPayout.create([{
+        payoutNumber: await generateBulkPayoutNumber(session),
+        payrollPeriod: { code: String(payrollPeriod.code || '').trim(), name: String(payrollPeriod.name || '').trim() },
+        startDate: range.start, endDate: range.end, paidOn: new Date(), employeeCount: lines.length,
+        totalGross: total('grossSalary'), totalAdvanceCut: total('advanceDeducted'),
+        totalAdvanceLeft: total('outstandingAdvanceAfter'), totalOtherDeduction: total('deductions'),
+        totalNetPaid: total('netSalary'), employees: lines, generatedBy: 'Admin',
+      }], { session });
+    });
+    return res.status(201).json({ payout: savedPayout });
+  } catch (err) {
+    return res.status(400).json({ message: err.message || 'Unable to create bulk payout.' });
+  } finally {
+    await session.endSession();
+  }
+});
+
 router.post('/', async (req, res) => {
   try {
     const {
