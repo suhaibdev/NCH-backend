@@ -5,7 +5,9 @@ const Attendance = require("../models/Attendance");
 const Employee = require("../models/Employee");
 const { isPresentByWorkHours, STANDARD_WORK_HOURS, toFiniteNumber } = require("../utils/payroll");
 
-const hasValidHours = (value) => Number.isFinite(value) && value >= 0 && value <= 24;
+const hasValidWorkHours = (value) => Number.isFinite(value) && value >= 0 && value <= 8;
+
+const hasValidOvertime = (value) => Number.isFinite(value) && value >= 0 && value <= 24;
 
 const hasValidAdvance = (value) => Number.isFinite(value) && value >= 0;
 
@@ -42,7 +44,7 @@ const normalizeAttendanceValues = ({ present, workHours, overtime, advancePaymen
       ? 0
       : toFiniteNumber(advancePayment, Number.NaN);
 
-  if (!hasValidHours(hours) || !hasValidHours(ot) || !hasValidAdvance(advance)) {
+  if (!hasValidWorkHours(hours) || !hasValidOvertime(ot) || !hasValidAdvance(advance)) {
     return null;
   }
 
@@ -136,13 +138,13 @@ router.post("/", async (req, res) => {
     const ot = Number(overtime ?? 0);
     const advance = Number(advancePayment ?? 0);
 
-    if (!hasValidHours(hours)) {
+    if (!hasValidWorkHours(hours)) {
       return res.status(400).json({
-        message: "Work hours must be between 0 and 24.",
+        message: "Work hours must be between 0 and 8.",
       });
     }
 
-    if (!hasValidHours(ot)) {
+    if (!hasValidOvertime(ot)) {
       return res.status(400).json({
         message: "Overtime must be between 0 and 24.",
       });
@@ -226,10 +228,10 @@ router.put("/:id", async (req, res) => {
         ? Number(attendance.advancePayment || 0)
         : toFiniteNumber(req.body.advancePayment, Number.NaN);
 
-    if (!hasValidHours(workHours)) {
-      return res.status(400).json({ message: "Work hours must be between 0 and 24." });
+    if (!hasValidWorkHours(workHours)) {
+      return res.status(400).json({ message: "Work hours must be between 0 and 8." });
     }
-    if (!hasValidHours(overtime)) {
+    if (!hasValidOvertime(overtime)) {
       return res.status(400).json({ message: "Overtime must be between 0 and 24." });
     }
     if (!hasValidAdvance(advancePayment)) {
