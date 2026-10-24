@@ -27,6 +27,26 @@ const getDateOnlyBounds = (value) => {
   return { date, nextDate };
 };
 
+const getBusinessToday = () => {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Kolkata",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date());
+  const value = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+
+  return `${value.year}-${value.month}-${value.day}`;
+};
+
+const isFutureAttendanceDate = (bounds) => bounds.date.toISOString().slice(0, 10) > getBusinessToday();
+
+const futureAttendanceDateResponse = (res) =>
+  res.status(400).json({
+    code: "FUTURE_ATTENDANCE_DATE",
+    message: "Attendance cannot be marked for a future date.",
+  });
+
 const normalizeAttendanceValues = ({ present, workHours, overtime, advancePayment }) => {
   if (workHours === "" || workHours === undefined || workHours === null) {
     return null;
@@ -133,6 +153,14 @@ router.post("/", async (req, res) => {
       });
     }
 
+    const bounds = getDateOnlyBounds(date);
+    if (!bounds) {
+      return res.status(400).json({ message: "A valid date is required." });
+    }
+    if (isFutureAttendanceDate(bounds)) {
+      return futureAttendanceDateResponse(res);
+    }
+
     const hours =
       workHours === "" || workHours === undefined || workHours === null ? 8 : Number(workHours);
     const ot = Number(overtime ?? 0);
@@ -163,19 +191,11 @@ router.post("/", async (req, res) => {
     }
 
     // Check if attendance already marked for this date
-    const selectedDate = new Date(date);
-
-    const startOfDay = new Date(selectedDate);
-    startOfDay.setHours(0, 0, 0, 0);
-
-    const endOfDay = new Date(selectedDate);
-    endOfDay.setHours(23, 59, 59, 999);
-
     const existingAttendance = await Attendance.findOne({
       employee: employeeId,
       date: {
-        $gte: startOfDay,
-        $lte: endOfDay,
+        $gte: bounds.date,
+        $lt: bounds.nextDate,
       },
     });
 
@@ -187,7 +207,7 @@ router.post("/", async (req, res) => {
 
     const attendance = new Attendance({
       employee: employeeId,
-      date: date,
+      date: bounds.date,
       // A zero-hour record is always absent, regardless of a client flag.
       present: isPresentByWorkHours(hours),
       // Only fall back to 8 when the value is truly missing/blank.
@@ -213,6 +233,11 @@ router.put("/:id", async (req, res) => {
     const attendance = await Attendance.findById(req.params.id);
     if (!attendance) {
       return res.status(404).json({ message: "Attendance record not found" });
+    }
+
+    const bounds = getDateOnlyBounds(attendance.date.toISOString().slice(0, 10));
+    if (bounds && isFutureAttendanceDate(bounds)) {
+      return futureAttendanceDateResponse(res);
     }
 
     const workHours =
@@ -278,6 +303,10 @@ router.post("/bulk", async (req, res) => {
     return res
       .status(400)
       .json({ message: "A valid date and at least one attendance record are required." });
+  }
+
+  if (isFutureAttendanceDate(bounds)) {
+    return futureAttendanceDateResponse(res);
   }
 
   const employeeIds = records.map((record) => record?.employeeId);
