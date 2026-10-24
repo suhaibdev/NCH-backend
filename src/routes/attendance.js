@@ -28,12 +28,12 @@ const getDateOnlyBounds = (value) => {
 };
 
 const normalizeAttendanceValues = ({ present, workHours, overtime, advancePayment }) => {
+  if (workHours === "" || workHours === undefined || workHours === null) {
+    return null;
+  }
+
   const isMarkedPresent = present !== false;
-  const hours = isMarkedPresent
-    ? workHours === "" || workHours === undefined || workHours === null
-      ? STANDARD_WORK_HOURS
-      : toFiniteNumber(workHours, Number.NaN)
-    : 0;
+  const hours = isMarkedPresent ? toFiniteNumber(workHours, Number.NaN) : 0;
   const ot = isMarkedPresent
     ? overtime === "" || overtime === undefined || overtime === null
       ? 0
