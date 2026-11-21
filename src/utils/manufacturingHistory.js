@@ -1,5 +1,8 @@
 const mongoose = require("mongoose");
 
+// Escape regex metacharacters so user input is matched literally.
+const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 const parsePage = (value, fallback, maximum) => {
   const parsed = Number(value ?? fallback);
   return Number.isSafeInteger(parsed) && parsed >= 1 && parsed <= maximum ? parsed : null;
@@ -100,7 +103,12 @@ const buildManufacturingHistoryQuery = (query = {}) => {
     if (end) filters.manufacturingDate.$lt = end;
   }
   if (finishedItem) filters.finishedItem = new mongoose.Types.ObjectId(finishedItem);
-  if (batchNumber) filters.normalizedBatchNumber = { $regex: batchNumber.toLowerCase() };
+  if (batchNumber) {
+    filters.normalizedBatchNumber = {
+      $regex: escapeRegex(batchNumber.toLowerCase()),
+      $options: "i",
+    };
+  }
   if (size.value) {
     filters.materials = {
       $elemMatch: {

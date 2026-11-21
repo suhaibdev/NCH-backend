@@ -290,13 +290,6 @@ manufacturingEntrySchema.index({
   normalizedBatchNumber: 1,
 });
 
-manufacturingEntrySchema.index(
-  {
-    manufacturingNumber: 1,
-  },
-  { unique: true }
-);
-
 manufacturingEntrySchema.index({
   finishedItem: 1,
   manufacturingDate: -1,

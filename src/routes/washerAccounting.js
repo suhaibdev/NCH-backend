@@ -14,7 +14,7 @@ const pageOf = (value, fallback, max) => {
   return Number.isSafeInteger(number) && number >= 1 && number <= max ? number : null;
 };
 const money = (paise) => (Number(paise || 0) / 100).toFixed(2);
-const validId = (value, message) => (mongoose.Types.ObjectId.isValid(value) ? null : message);
+const validId = (value, message = "Invalid ID.") => (mongoose.Types.ObjectId.isValid(value) ? null : message);
 const clean = (value, max, label) => {
   const text = String(value || "").trim();
   return text.length <= max

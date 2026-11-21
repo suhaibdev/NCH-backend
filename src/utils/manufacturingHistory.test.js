@@ -53,4 +53,16 @@ assert.equal(
   "invalid month filters are rejected"
 );
 
+const special = buildManufacturingHistoryQuery({ batchNumber: "a.b(" });
+assert.equal(special.valid, true, "batch search with regex characters is accepted");
+const specialFilter = special.value.filters.normalizedBatchNumber;
+assert.equal(specialFilter.$regex, "a\\.b\\(", "batch search escapes regex characters");
+assert.equal(specialFilter.$options, "i", "batch search is case-insensitive");
+let specialRegex;
+assert.doesNotThrow(() => {
+  specialRegex = new RegExp(specialFilter.$regex, specialFilter.$options);
+}, "escaped batch search compiles");
+assert.equal(specialRegex.test("xa.b(y"), true, "escaped batch search matches literally");
+assert.equal(specialRegex.test("axb("), false, "escaped '.' does not match any character");
+
 console.log("Manufacturing history helper tests passed.");
