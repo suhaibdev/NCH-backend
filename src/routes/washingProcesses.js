@@ -87,12 +87,11 @@ router.post("/", async (req, res) => {
       const source = await StockItem.findById(body.sourceStockItem).session(session);
       if (!source) throw Object.assign(new Error("Source stock item not found."), { statusCode: 404 });
       if (source.category !== "raw_material" || source.unit !== "pcs" || !source.stockType || !source.supplier || !hasCompleteSize(source.size)) throw Object.assign(new Error("Only supplier-and-size-tracked Raw Material in PCS can be sent to washing."), { statusCode: 400 });
-      const [sourceType, supplier, washer, destinationType] = await Promise.all([
-        StockType.findOne({ _id: source.stockType, category: "raw_material", requiresSupplier: true, requiresSize: true }).session(session).lean(),
-        Supplier.findById(source.supplier).select("name").session(session).lean(),
-        Washer.findOne({ _id: body.washer, isActive: true }).session(session).lean(),
-        StockType.findOne({ _id: body.destinationStockType, category: "washed_raw_material", requiresSupplier: true, requiresSize: true }).session(session).lean(),
-      ]);
+      // A transaction session must never run two operations at once: await one by one.
+      const sourceType = await StockType.findOne({ _id: source.stockType, category: "raw_material", requiresSupplier: true, requiresSize: true }).session(session).lean();
+      const supplier = await Supplier.findById(source.supplier).select("name").session(session).lean();
+      const washer = await Washer.findOne({ _id: body.washer, isActive: true }).session(session).lean();
+      const destinationType = await StockType.findOne({ _id: body.destinationStockType, category: "washed_raw_material", requiresSupplier: true, requiresSize: true }).session(session).lean();
       if (!sourceType) throw Object.assign(new Error("Source stock must use a configured Raw Material Stock Type requiring supplier and size."), { statusCode: 400 });
       if (!supplier) throw Object.assign(new Error("Source supplier was not found."), { statusCode: 400 });
       if (!washer) throw Object.assign(new Error("Washer was not found or is inactive."), { statusCode: 400 });

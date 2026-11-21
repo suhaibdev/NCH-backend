@@ -1,5 +1,6 @@
 const express = require("express");
 const mongoose = require("mongoose");
+const { sendServerError } = require("../utils/httpErrors");
 const router = express.Router();
 const Attendance = require("../models/Attendance");
 const Employee = require("../models/Employee");
@@ -95,7 +96,7 @@ router.get("/", async (req, res) => {
     const attendance = await Attendance.find().populate("employee", "name").sort({ date: -1 });
     res.json(attendance);
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    sendServerError(res, "GET ATTENDANCE", err);
   }
 });
 
@@ -111,7 +112,7 @@ router.get("/range", async (req, res) => {
     }).populate("employee", "name");
     res.json(attendance);
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    sendServerError(res, "GET ATTENDANCE RANGE", err);
   }
 });
 
@@ -150,7 +151,7 @@ router.get("/employee/:employeeId", async (req, res) => {
       .sort({ date: -1 });
     res.json(attendance);
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    sendServerError(res, "GET EMPLOYEE ATTENDANCE", err);
   }
 });
 
@@ -308,7 +309,7 @@ router.delete("/:id", async (req, res) => {
     await attendance.deleteOne();
     res.json({ message: "Attendance record deleted" });
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    sendServerError(res, "DELETE ATTENDANCE", err);
   }
 });
 

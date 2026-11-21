@@ -5,7 +5,13 @@ const Employee = require("../models/Employee");
 const Customer = require("../models/Customer");
 const Attendance = require("../models/Attendance");
 const Payout = require("../models/Payout");
-const { buildDashboardResponse } = require("../utils/dashboardResponse");
+const BulkPayout = require("../models/BulkPayout");
+const {
+  buildDashboardResponse,
+  getMonthBounds,
+  sumMonthSalary,
+} = require("../utils/dashboardResponse");
+const { sendServerError } = require("../utils/httpErrors");
 
 router.get("/", async (req, res) => {
   try {
@@ -18,6 +24,9 @@ router.get("/", async (req, res) => {
     endOfToday.setHours(23, 59, 59, 999);
 
     const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+    // Salary paid this month: UTC month bounds, independent of server time zone.
+    const paidBounds = getMonthBounds(today);
+    const paidRange = { $gte: paidBounds.start, $lt: paidBounds.end };
 
     const [
       totalEmployees,
@@ -25,7 +34,8 @@ router.get("/", async (req, res) => {
       totalCustomers,
       presentToday,
       attendanceMarked,
-      monthSalary,
+      monthSinglePaid,
+      monthBulkPaid,
       monthAdvance,
       recentEmployees,
     ] = await Promise.all([
@@ -53,21 +63,13 @@ router.get("/", async (req, res) => {
       }),
 
       Payout.aggregate([
-        {
-          $match: {
-            createdAt: {
-              $gte: startOfMonth,
-            },
-          },
-        },
-        {
-          $group: {
-            _id: null,
-            total: {
-              $sum: "$amount",
-            },
-          },
-        },
+        { $match: { status: "Paid", paidOn: paidRange } },
+        { $group: { _id: null, total: { $sum: "$netSalary" } } },
+      ]),
+
+      BulkPayout.aggregate([
+        { $match: { paidOn: paidRange } },
+        { $group: { _id: null, total: { $sum: "$totalNetPaid" } } },
       ]),
 
       Attendance.aggregate([
@@ -109,17 +111,13 @@ router.get("/", async (req, res) => {
         totalCustomers,
         presentToday,
         attendanceMarked,
-        monthSalary,
+        monthSalary: [{ total: sumMonthSalary(monthSinglePaid, monthBulkPaid) }],
         monthAdvance,
         recentEmployees,
       })
     );
   } catch (err) {
-    console.error(err);
-
-    res.status(500).json({
-      message: "Failed to load dashboard",
-    });
+    sendServerError(res, "GET DASHBOARD", err, "Failed to load dashboard");
   }
 });
 

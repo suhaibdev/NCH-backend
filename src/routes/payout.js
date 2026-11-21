@@ -23,6 +23,7 @@ const {
   validateNetSalary,
 } = require('../utils/payroll');
 const payoutEdit = require('../utils/payoutEdit');
+const { sendServerError } = require('../utils/httpErrors');
 
 // ===============================================
 // HELPER FUNCTIONS
@@ -224,9 +225,7 @@ router.get('/', async (req, res) => {
       .sort({ paidOn: -1 });
     res.json(payouts);
   } catch (err) {
-    res.status(500).json({
-      message: err.message,
-    });
+    sendServerError(res, 'GET PAYOUTS', err);
   }
 });
 
@@ -286,9 +285,7 @@ router.get('/:employeeId', async (req, res) => {
       .lean(); // Using .lean() here is a good optimization as it's a read-only operation.
     res.json(payouts);
   } catch (err) {
-    res.status(500).json({
-      message: err.message,
-    });
+    sendServerError(res, 'GET EMPLOYEE PAYOUTS', err);
   }
 });
 
@@ -1052,19 +1049,13 @@ router.post('/', async (req, res) => {
       if (err.code === 'PAYOUT_OVERLAP') {
         return overlapResponse(err.overlapRecord);
       }
-      console.error(err);
-      return res.status(500).json({
-        message: err.message || 'Failed to create payout.',
-      });
+      return sendServerError(res, 'CREATE PAYOUT', err, 'Failed to create payout.');
     } finally {
       // End the session exactly once.
       await session.endSession();
     }
   } catch (err) {
-    console.error(err);
-    return res.status(500).json({
-      message: err.message || 'Internal Server Error',
-    });
+    return sendServerError(res, 'CREATE PAYOUT', err);
       }
 });
 
@@ -1217,11 +1208,7 @@ router.patch("/:id/pay", async (req, res) => {
 
   } catch (err) {
 
-    console.error(err);
-
-    res.status(500).json({
-      message: err.message ||'CREATE PAYOUT ERROR.',
-    });
+    sendServerError(res, 'MARK PAYOUT PAID', err);
 
   }
 });
@@ -1258,11 +1245,7 @@ router.patch("/:id/status", async (req, res) => {
 
   } catch (err) {
 
-    console.error(err);
-
-    res.status(500).json({
-      message: err.message,
-    });
+    sendServerError(res, 'UPDATE PAYOUT STATUS', err);
 
   }
 });
@@ -1462,7 +1445,8 @@ router.delete('/bulk/:id', async (req, res) => {
       employeeCount: deletedPayout.employeeCount,
     });
   } catch (err) {
-    return res.status(err.status || 500).json({ message: err.message || 'Unable to delete bulk payout.' });
+    if (err.status) return res.status(err.status).json({ message: err.message });
+    return sendServerError(res, 'DELETE BULK PAYOUT', err, 'Unable to delete bulk payout.');
   } finally {
     await session.endSession();
   }
@@ -1491,7 +1475,8 @@ router.delete("/:id", async (req, res) => {
 
     return res.json({ message: 'Payout permanently deleted. The affected period is eligible for payout again.' });
   } catch (err) {
-    return res.status(err.status || 500).json({ message: err.message || 'Unable to delete payout.' });
+    if (err.status) return res.status(err.status).json({ message: err.message });
+    return sendServerError(res, 'DELETE PAYOUT', err, 'Unable to delete payout.');
   } finally {
     await session.endSession();
   }

@@ -58,12 +58,13 @@ const getConfiguredLabelStockType = (session) => {
 };
 
 const getSnapshots = async (item, session) => {
-  const [stockType, supplier] = await Promise.all([
-    item.stockType
-      ? StockType.findById(item.stockType).select("name").session(session).lean()
-      : null,
-    item.supplier ? Supplier.findById(item.supplier).select("name").session(session).lean() : null,
-  ]);
+  // A transaction session must never run two operations at once: await one by one.
+  const stockType = item.stockType
+    ? await StockType.findById(item.stockType).select("name").session(session).lean()
+    : null;
+  const supplier = item.supplier
+    ? await Supplier.findById(item.supplier).select("name").session(session).lean()
+    : null;
 
   return { stockType, supplier };
 };

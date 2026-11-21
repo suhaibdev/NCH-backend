@@ -155,5 +155,7 @@ const payoutSchema = new mongoose.Schema(
 
 // Supports per-employee overlap and attendance-lock lookups by period.
 payoutSchema.index({ employee: 1, startDate: 1, endDate: 1 });
+// Supports the dashboard "paid this month" lookup.
+payoutSchema.index({ status: 1, paidOn: -1 });
 
 module.exports = mongoose.model("Payout", payoutSchema);

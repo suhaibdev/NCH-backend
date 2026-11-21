@@ -1,4 +1,5 @@
 const express = require('express');
+const { sendServerError } = require("../utils/httpErrors");
 const router = express.Router();
 const Employee = require('../models/Employee');
 
@@ -10,7 +11,7 @@ router.get('/', async (req, res) => {
     const employees = await Employee.find();
     res.json(employees);
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    sendServerError(res, "GET EMPLOYEES", err);
   }
 });
 
@@ -22,7 +23,7 @@ router.get('/status/active', async (req, res) => {
     const activeEmployees = await Employee.find({ isActive: true });
     res.json(activeEmployees);
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    sendServerError(res, "GET ACTIVE EMPLOYEES", err);
   }
 });
 
@@ -41,9 +42,7 @@ router.get('/:id', async (req, res) => {
 
     res.json(employee);
   } catch (err) {
-    res.status(500).json({
-      message: err.message,
-    });
+    sendServerError(res, "GET EMPLOYEE", err);
   }
 });
 
@@ -126,9 +125,7 @@ router.delete('/:id', async (req, res) => {
 
     res.json(updatedEmployee);
   } catch (err) {
-    res.status(500).json({
-      message: err.message,
-    });
+    sendServerError(res, "DELETE EMPLOYEE", err);
   }
 });
 

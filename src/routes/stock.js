@@ -565,7 +565,6 @@ router.post(
         .status(500)
         .json({
           message:
-            err.message ||
             "Unable to create Stock Type.",
         });
     }
@@ -826,7 +825,6 @@ router.put(
         .status(500)
         .json({
           message:
-            err.message ||
             "Unable to update Stock Type.",
         });
     }
@@ -925,7 +923,6 @@ router.delete(
         .status(500)
         .json({
           message:
-            err.message ||
             "Unable to delete Stock Type.",
         });
     }
@@ -1836,7 +1833,6 @@ router.post(
         .status(500)
         .json({
           message:
-            err.message ||
             "Unable to create stock item.",
         });
     } finally {
@@ -2329,7 +2325,6 @@ router.put(
         .status(500)
         .json({
           message:
-            err.message ||
             "Unable to update stock item.",
         });
     }
@@ -2561,7 +2556,6 @@ router.post(
         .status(500)
         .json({
           message:
-            err.message ||
             "Unable to add stock.",
         });
     } finally {
@@ -2853,7 +2847,6 @@ router.post(
         .status(500)
         .json({
           message:
-            err.message ||
             "Unable to remove stock.",
         });
     } finally {
