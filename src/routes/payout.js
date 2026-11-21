@@ -9,15 +9,18 @@ const Attendance = require('../models/Attendance');
 const PayoutCounter = require('../models/PayoutCounter');
 const {
   buildPayoutHistoryByEmployee,
+  filterPayoutsEndingBy,
   findOverlappingPayout,
   getOverlapDetails,
 } = require('../utils/payoutOverlap');
 const { getHistoryPagination, serializeBulkHistoryItem } = require('../utils/payoutHistory');
 const {
   STANDARD_WORK_HOURS,
+  calculateAdvanceStatus,
   calculateNetSalary,
   getWorkingTime,
   isPresentByWorkHours,
+  validateNetSalary,
 } = require('../utils/payroll');
 
 // ===============================================
@@ -113,25 +116,17 @@ const calculatePayrollMetrics = (attendance, start, end, hourlyRate) => {
 };
 
 /**
- * Calculates the lifetime advance status for an employee.
- * @returns {object} An object containing advance metrics.
+ * Loads one employee's payout history from BOTH single Payout records and
+ * BulkPayout employee lines (same sources the bulk payout flow uses).
  */
-const calculateAdvanceStatus = (attendanceRecords, payoutRecords) => {
-  const totalAdvanceTaken = roundCurrency(attendanceRecords.reduce(
-    (sum, item) => sum + (item.advancePayment || 0),
-    0
-  ));
-
-  const advanceRecovered = roundCurrency(payoutRecords.reduce(
-    (sum, item) => sum + (item.advanceDeducted || 0),
-    0
-  ));
-
-  return {
-    totalAdvanceTaken,
-    advanceRecovered,
-    remainingAdvance: roundCurrency(Math.max(0, totalAdvanceTaken - advanceRecovered)),
-  };
+const loadEmployeePayoutHistory = async (employeeId, session = null) => {
+  const objectId = new mongoose.Types.ObjectId(String(employeeId));
+  const withSession = (query) => (session ? query.session(session) : query);
+  const [legacyPayouts, bulkPayouts] = await Promise.all([
+    withSession(Payout.find({ employee: objectId }).lean()),
+    withSession(BulkPayout.find({ 'employees.employee': objectId }).lean()),
+  ]);
+  return buildPayoutHistoryByEmployee(legacyPayouts, bulkPayouts).get(String(employeeId)) || [];
 };
 
 // ===============================================
@@ -327,11 +322,12 @@ router.post('/preview', async (req, res) => {
       return res.status(400).json({ message: 'Cannot process payroll for an inactive employee.' });
     }
 
-    // Optimization: Fetch only historical data relevant to the calculation period.
-    const [allAttendance, previousPayouts] = await Promise.all([
+    // Advance recoveries come from BOTH single payouts and bulk payout lines.
+    const [allAttendance, payoutHistory] = await Promise.all([
       Attendance.find({ employee: employeeId, date: { $lte: range.end } }).lean(),
-      Payout.find({ employee: employeeId, endDate: { $lte: range.end } }).lean()
+      loadEmployeePayoutHistory(employeeId),
     ]);
+    const previousPayouts = filterPayoutsEndingBy(payoutHistory, range.end);
 
     const hourlyRate = roundCurrency(employee.baseDailySalary / STANDARD_WORK_HOURS);
     const payroll = calculatePayrollMetrics(
@@ -764,583 +760,15 @@ router.post('/bulk-preview', async (req, res) => {
 });
 
 // ===============================================
-// CREATE BULK PAYOUTS
+// RETIRED: LEGACY BULK PAYOUTS
 // ===============================================
-
-router.post('/bulk-legacy', async (req, res) => {
-  try {
-    const {
-      startDate,
-      endDate,
-      payouts,
-    } = req.body;
-
-    const range = validatePayrollRange(
-      startDate,
-      endDate
-    );
-
-    if (!range.valid) {
-      return res
-        .status(range.status)
-        .json({
-          message: range.message,
-        });
-    }
-
-    if (
-      !Array.isArray(payouts) ||
-      payouts.length === 0
-    ) {
-      return res.status(400).json({
-        message:
-          'Please select at least one employee payout.',
-      });
-    }
-
-    /*
-     * Prevent duplicate employee IDs inside the
-     * same request.
-     */
-    const uniqueItems = [];
-
-    const seenEmployees =
-      new Set();
-
-    payouts.forEach((item) => {
-      const id =
-        item.employeeId?.toString();
-
-      if (
-        id &&
-        !seenEmployees.has(id)
-      ) {
-        seenEmployees.add(id);
-
-        uniqueItems.push(item);
-      }
-    });
-
-    const created = [];
-    const failed = [];
-
-    /*
-     * IMPORTANT:
-     *
-     * Each employee is processed separately.
-     *
-     * We intentionally DO NOT use one transaction
-     * for the entire batch because you requested:
-     *
-     * successful payouts must stay created even
-     * when another employee fails.
-     */
-    for (
-      const item of uniqueItems
-    ) {
-      let session = null;
-
-      try {
-        const {
-          employeeId,
-          advanceDeducted = 0,
-          deductions = 0,
-          paymentMethod = 'cash',
-          remarks = '',
-        } = item;
-
-        if (
-          !mongoose.Types.ObjectId.isValid(
-            employeeId
-          )
-        ) {
-          throw new Error(
-            'Invalid employee ID.'
-          );
-        }
-
-        if (
-          !VALID_PAYMENT_METHODS.includes(
-            paymentMethod
-          )
-        ) {
-          throw new Error(
-            'Invalid payment method.'
-          );
-        }
-
-        const employee =
-          await Employee.findById(
-            employeeId
-          ).lean();
-
-        if (!employee) {
-          throw new Error(
-            'Employee not found.'
-          );
-        }
-
-        if (!employee.isActive) {
-          throw new Error(
-            'Employee is inactive.'
-          );
-        }
-
-        /*
-         * Bulk payout is allowed only when at
-         * least one attendance record has been
-         * marked during the selected period.
-         */
-        const attendanceMarked =
-          await Attendance.exists({
-            employee:
-              employeeId,
-
-            date: {
-              $gte: range.start,
-              $lte: range.end,
-            },
-          });
-
-        if (!attendanceMarked) {
-          throw new Error(
-            'No attendance marked for this payroll period.'
-          );
-        }
-
-        session =
-          await mongoose.startSession();
-
-        session.startTransaction();
-
-        /*
-         * Exact and partial overlap protection.
-         */
-        const existing =
-          await Payout.findOne({
-            employee:
-              employeeId,
-
-            startDate: {
-              $lte: range.end,
-            },
-
-            endDate: {
-              $gte: range.start,
-            },
-          }).session(session);
-
-        if (existing) {
-          throw new Error(
-            'A payout for an overlapping period already exists.'
-          );
-        }
-
-        const [
-          allAttendance,
-          previousPayouts,
-        ] = await Promise.all([
-          Attendance.find({
-            employee:
-              employeeId,
-
-            date: {
-              $lte: range.end,
-            },
-          })
-            .session(session)
-            .lean(),
-
-          Payout.find({
-            employee:
-              employeeId,
-
-            endDate: {
-              $lte: range.end,
-            },
-          })
-            .session(session)
-            .lean(),
-        ]);
-
-        const hourlyRate =
-          roundCurrency(
-            employee.baseDailySalary /
-              STANDARD_WORK_HOURS
-          );
-
-        const payroll =
-          calculatePayrollMetrics(
-            allAttendance,
-            range.start,
-            range.end,
-            hourlyRate
-          );
-
-        const advanceStatus =
-          calculateAdvanceStatus(
-            allAttendance,
-            previousPayouts
-          );
-
-        const manualAdvance =
-          Number(
-            advanceDeducted || 0
-          );
-
-        const otherDeduction =
-          Number(
-            deductions || 0
-          );
-
-        if (!Number.isFinite(manualAdvance) || manualAdvance < 0) {
-          throw new Error(
-            'Advance deduction cannot be negative.'
-          );
-        }
-
-        if (
-          manualAdvance >
-          advanceStatus.remainingAdvance
-        ) {
-          throw new Error(
-            `Maximum recoverable advance is ₹${roundCurrency(
-              advanceStatus.remainingAdvance
-            )}`
-          );
-        }
-
-        if (!Number.isFinite(otherDeduction) || otherDeduction < 0) {
-          throw new Error(
-            'Other deduction cannot be negative.'
-          );
-        }
-
-        const finalRemarks =
-          String(
-            remarks || ''
-          ).trim();
-
-        if (
-          finalRemarks.length >
-          500
-        ) {
-          throw new Error(
-            'Remarks cannot exceed 500 characters.'
-          );
-        }
-
-        const netSalary =
-          calculateNetSalary(
-            payroll.grossSalary,
-            manualAdvance,
-            otherDeduction
-          );
-
-        const outstandingAfter =
-          roundCurrency(
-            Math.max(
-              0,
-              advanceStatus.remainingAdvance -
-                manualAdvance
-            )
-          );
-
-        const payout =
-          new Payout({
-            employee:
-              employeeId,
-
-            startDate:
-              range.start,
-
-            endDate:
-              range.end,
-
-            totalDaysWorked:
-              payroll.totalDaysWorked,
-
-            totalHoursWorked:
-              payroll.totalHoursWorked,
-
-            fullWorkingDays:
-              payroll.workingTime.fullWorkingDays,
-
-            remainingWorkingHours:
-              payroll.workingTime.remainingWorkingHours,
-
-            overtimeHours:
-              payroll.overtimeHours,
-
-            dailySalary:
-              employee.baseDailySalary,
-
-            hourlyRate,
-
-            baseSalary:
-              payroll.baseSalary,
-
-            overtimeAmount:
-              payroll.overtimeAmount,
-
-            grossSalary:
-              payroll.grossSalary,
-
-            totalAmount:
-              payroll.grossSalary,
-
-            outstandingAdvanceBefore:
-              advanceStatus.remainingAdvance,
-
-            advanceDeducted:
-              manualAdvance,
-
-            outstandingAdvanceAfter:
-              outstandingAfter,
-
-            deductions:
-              otherDeduction,
-
-            netSalary,
-
-            paymentMethod,
-
-            status:
-              'Pending',
-
-            paidOn:
-              null,
-
-            remarks:
-              finalRemarks,
-
-            generatedBy:
-              'Admin',
-
-            printed:
-              false,
-
-            salarySlipNumber:
-              await generatePayoutNumber(session),
-          });
-
-        const saved =
-          await payout.save({
-            session,
-          });
-
-        await session.commitTransaction();
-
-        await saved.populate(
-          'employee',
-          'name baseDailySalary'
-        );
-
-        /*
-         * These returned fields are also exactly
-         * what the frontend print sheet will need.
-         */
-        created.push({
-          _id:
-            saved._id,
-
-          employeeId:
-            saved.employee?._id,
-
-          employeeName:
-            saved.employee?.name,
-
-          startDate:
-            saved.startDate,
-
-          endDate:
-            saved.endDate,
-
-          totalDaysWorked:
-            saved.totalDaysWorked,
-
-          totalHoursWorked:
-            saved.totalHoursWorked,
-
-          fullWorkingDays:
-            saved.fullWorkingDays,
-
-          remainingWorkingHours:
-            saved.remainingWorkingHours,
-
-          grossSalary:
-            saved.grossSalary,
-
-          outstandingAdvanceBefore:
-            saved.outstandingAdvanceBefore,
-
-          advanceDeducted:
-            saved.advanceDeducted,
-
-          outstandingAdvanceAfter:
-            saved.outstandingAdvanceAfter,
-
-          deductions:
-            saved.deductions,
-
-          netSalary:
-            saved.netSalary,
-
-          paymentMethod:
-            saved.paymentMethod,
-
-          status:
-            saved.status,
-
-          createdAt:
-            saved.createdAt,
-
-          salarySlipNumber:
-            saved.salarySlipNumber,
-        });
-      } catch (err) {
-        if (
-          session?.inTransaction()
-        ) {
-          await session.abortTransaction();
-        }
-
-        console.error(
-          'BULK EMPLOYEE PAYOUT ERROR:',
-          err
-        );
-
-        failed.push({
-          employeeId:
-            item.employeeId,
-
-          employeeName:
-            item.employeeName ||
-            '',
-
-          message:
-            err.message ||
-            'Failed to create payout.',
-        });
-      } finally {
-        if (session) {
-          session.endSession();
-        }
-      }
-    }
-
-    /*
-     * Totals are based ONLY on payouts that
-     * actually succeeded.
-     */
-    const summary =
-      created.reduce(
-        (result, payout) => {
-          result.createdCount +=
-            1;
-
-          result.totalGrossSalary +=
-            Number(
-              payout.grossSalary ||
-                0
-            );
-
-          result.totalAdvanceDeducted +=
-            Number(
-              payout.advanceDeducted ||
-                0
-            );
-
-          result.totalOtherDeduction +=
-            Number(
-              payout.deductions ||
-                0
-            );
-
-          result.totalNetSalary +=
-            Number(
-              payout.netSalary ||
-                0
-            );
-
-          return result;
-        },
-        {
-          createdCount: 0,
-
-          failedCount:
-            failed.length,
-
-          totalGrossSalary: 0,
-
-          totalAdvanceDeducted: 0,
-
-          totalOtherDeduction: 0,
-
-          totalNetSalary: 0,
-        }
-      );
-
-    summary.totalGrossSalary =
-      roundCurrency(
-        summary.totalGrossSalary
-      );
-
-    summary.totalAdvanceDeducted =
-      roundCurrency(
-        summary.totalAdvanceDeducted
-      );
-
-    summary.totalOtherDeduction =
-      roundCurrency(
-        summary.totalOtherDeduction
-      );
-
-    summary.totalNetSalary =
-      roundCurrency(
-        summary.totalNetSalary
-      );
-
-    const responseBody = {
-      message:
-        failed.length === 0
-          ? 'All selected payouts were created successfully.'
-          : `${created.length} payout(s) created and ${failed.length} payout(s) failed.`,
-
-      created,
-
-      failed,
-
-      summary,
-    };
-
-    /*
-     * 201 = everything succeeded.
-     * 207 = partial success.
-     *
-     * Axios treats both as successful HTTP
-     * responses because both are 2xx statuses.
-     */
-    return res
-      .status(
-        failed.length > 0
-          ? 207
-          : 201
-      )
-      .json(responseBody);
-  } catch (err) {
-    console.error(
-      'BULK PAYOUT ERROR:',
-      err
-    );
-
-    return res.status(500).json({
-      message:
-        err.message ||
-        'Failed to create bulk payouts.',
-    });
-  }
-});
+// The old per-employee bulk flow ignored BulkPayout records when checking
+// overlap and advance recovery. It has no frontend caller; use POST /bulk.
+router.post('/bulk-legacy', (req, res) =>
+  res.status(410).json({
+    message: 'This endpoint has been retired. Use POST /api/payout/bulk.',
+  })
+);
 
 // ===============================================
 // CREATE PAYOUT
@@ -1505,21 +933,21 @@ router.post('/', async (req, res) => {
     try {
       session.startTransaction();
 
-      // Robust overlap detection prevents creating payrolls for periods that intersect with existing ones.
-      const existing = await Payout.findOne({
-        employee: employeeId,
-        startDate: { $lte: range.end },
-        endDate: { $gte: range.start },
-      }).session(session);
+      // Overlap and advance recovery consider BOTH single payouts and bulk payout lines.
+      const [allAttendance, payoutHistory] = await Promise.all([
+        Attendance.find({ employee: employeeId, date: { $lte: range.end } }).session(session).lean(),
+        loadEmployeePayoutHistory(employeeId, session),
+      ]);
 
-      if (existing) {
-        throw new Error('A payout for an overlapping period already exists.');
+      const overlap = findOverlappingPayout(payoutHistory, range.start, range.end);
+      if (overlap) {
+        const overlapError = new Error('A payout for an overlapping period already exists.');
+        overlapError.code = 'PAYOUT_OVERLAP';
+        overlapError.overlap = getOverlapDetails(overlap);
+        throw overlapError;
       }
 
-      const [allAttendance, previousPayouts] = await Promise.all([
-        Attendance.find({ employee: employeeId, date: { $lte: range.end } }).session(session).lean(),
-        Payout.find({ employee: employeeId, endDate: { $lte: range.end } }).session(session).lean()
-      ]);
+      const previousPayouts = filterPayoutsEndingBy(payoutHistory, range.end);
 
     const hourlyRate = roundCurrency(employee.baseDailySalary / STANDARD_WORK_HOURS);
     const payroll = calculatePayrollMetrics(
@@ -1545,11 +973,16 @@ router.post('/', async (req, res) => {
     if (!Number.isFinite(otherDeduction) || otherDeduction < 0) {
       return res.status(400).json({ message: 'Other deduction cannot be negative.' });
     }
-    const netSalary = calculateNetSalary(
+    const netCheck = validateNetSalary(
       payroll.grossSalary,
       manualAdvance,
-      otherDeduction
+      otherDeduction,
+      employee.name
     );
+    if (!netCheck.valid) {
+      return res.status(400).json({ message: netCheck.message });
+    }
+    const netSalary = netCheck.netSalary;
 
     const payout = new Payout({
       employee: employeeId,
@@ -1593,8 +1026,13 @@ router.post('/', async (req, res) => {
       // Abort the transaction in case of any error.
       await session.abortTransaction();
       // Distinguish between client errors (like overlap) and server errors.
-      if (err.message.includes('overlapping period')) {
-        return res.status(409).json({ message: err.message });
+      if (err.code === 'PAYOUT_OVERLAP') {
+        return res.status(409).json({
+          message: err.message,
+          code: err.code,
+          employeeName: employee.name,
+          overlap: err.overlap,
+        });
       }
     console.error(err);
     res.status(500).json({

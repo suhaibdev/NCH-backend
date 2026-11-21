@@ -33,9 +33,49 @@ const calculateNetSalary = (grossSalary, advanceDeducted, otherDeduction) =>
       toFiniteNumber(otherDeduction)) * 100
   ) / 100;
 
+const roundCurrency = (value) => Math.round(value * 100) / 100;
+
+/**
+ * Lifetime advance status for an employee.
+ * `payoutRecords` may mix single Payout records and BulkPayout employee
+ * lines (see buildPayoutHistoryByEmployee) so recoveries are never counted twice.
+ */
+const calculateAdvanceStatus = (attendanceRecords, payoutRecords) => {
+  const totalAdvanceTaken = roundCurrency(attendanceRecords.reduce(
+    (sum, item) => sum + (item.advancePayment || 0),
+    0
+  ));
+
+  const advanceRecovered = roundCurrency(payoutRecords.reduce(
+    (sum, item) => sum + (item.advanceDeducted || 0),
+    0
+  ));
+
+  return {
+    totalAdvanceTaken,
+    advanceRecovered,
+    remainingAdvance: roundCurrency(Math.max(0, totalAdvanceTaken - advanceRecovered)),
+  };
+};
+
+/** Net salary must not go below zero (same rule as bulk payouts). */
+const validateNetSalary = (grossSalary, advanceDeducted, otherDeduction, employeeName) => {
+  const netSalary = calculateNetSalary(grossSalary, advanceDeducted, otherDeduction);
+  if (netSalary < 0) {
+    return {
+      valid: false,
+      netSalary,
+      message: `${employeeName || "Employee"} has deductions greater than gross salary.`,
+    };
+  }
+  return { valid: true, netSalary };
+};
+
 module.exports = {
   STANDARD_WORK_HOURS,
+  calculateAdvanceStatus,
   calculateNetSalary,
+  validateNetSalary,
   getWorkingTime,
   isPresentByWorkHours,
   normalizeWorkHours,

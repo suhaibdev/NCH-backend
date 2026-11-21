@@ -4,6 +4,19 @@ const router = express.Router();
 const Attendance = require("../models/Attendance");
 const Employee = require("../models/Employee");
 const { isPresentByWorkHours, STANDARD_WORK_HOURS, toFiniteNumber } = require("../utils/payroll");
+const {
+  ATTENDANCE_LOCK_CODE,
+  findAttendanceLocks,
+  lockedResponseBody,
+} = require("../utils/attendanceLock");
+
+// Attendance covered by an existing payout cannot change until that payout is deleted.
+const respondIfLocked = async (res, employeeIds, date) => {
+  const locked = await findAttendanceLocks({ employeeIds, date });
+  if (locked.length === 0) return false;
+  res.status(409).json(lockedResponseBody(locked));
+  return true;
+};
 
 const hasValidWorkHours = (value) => Number.isFinite(value) && value >= 0 && value <= 8;
 
@@ -190,6 +203,8 @@ router.post("/", async (req, res) => {
       return res.status(404).json({ message: "Employee not found" });
     }
 
+    if (await respondIfLocked(res, [employee._id], bounds.date)) return;
+
     // Check if attendance already marked for this date
     const existingAttendance = await Attendance.findOne({
       employee: employeeId,
@@ -234,6 +249,8 @@ router.put("/:id", async (req, res) => {
     if (!attendance) {
       return res.status(404).json({ message: "Attendance record not found" });
     }
+
+    if (await respondIfLocked(res, [attendance.employee], attendance.date)) return;
 
     const bounds = getDateOnlyBounds(attendance.date.toISOString().slice(0, 10));
     if (bounds && isFutureAttendanceDate(bounds)) {
@@ -287,6 +304,7 @@ router.delete("/:id", async (req, res) => {
     if (!attendance) {
       return res.status(404).json({ message: "Attendance record not found" });
     }
+    if (await respondIfLocked(res, [attendance.employee], attendance.date)) return;
     await attendance.deleteOne();
     res.json({ message: "Attendance record deleted" });
   } catch (err) {
@@ -350,6 +368,15 @@ router.post("/bulk", async (req, res) => {
         throw new Error("One or more selected employees are no longer active.");
       }
 
+      // Whole request is rejected if any selected employee is covered by a payout.
+      const locked = await findAttendanceLocks({ employeeIds, date: bounds.date, session });
+      if (locked.length > 0) {
+        const lockError = new Error("Attendance locked by payout.");
+        lockError.code = ATTENDANCE_LOCK_CODE;
+        lockError.locked = locked;
+        throw lockError;
+      }
+
       const existingByEmployee = new Map(
         existingRecords.map((record) => [String(record.employee), record])
       );
@@ -383,6 +410,9 @@ router.post("/bulk", async (req, res) => {
 
     res.status(200).json(result);
   } catch (err) {
+    if (err.code === ATTENDANCE_LOCK_CODE) {
+      return res.status(409).json(lockedResponseBody(err.locked));
+    }
     const knownMessage =
       err.message === "One or more selected employees are no longer active."
         ? err.message
