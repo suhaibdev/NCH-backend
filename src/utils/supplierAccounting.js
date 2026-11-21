@@ -4,16 +4,16 @@ const SupplierPayment = require("../models/SupplierPayment");
 
 const PAYMENT_METHODS = ["cash", "bank_transfer", "upi", "cheque", "other"];
 
-const parseRupeesToPaise = (value) => {
+const parseRupeesToPaise = (value, label = "Payment amount") => {
   const source = typeof value === "number" ? String(value) : String(value ?? "").trim();
   if (!/^\d+(?:\.\d{1,2})?$/.test(source)) {
-    return { valid: false, message: "Payment amount is invalid." };
+    return { valid: false, message: `${label} is invalid.` };
   }
 
   const [whole, fraction = ""] = source.split(".");
   const paise = Number(whole) * 100 + Number((fraction + "00").slice(0, 2));
   if (!Number.isSafeInteger(paise) || paise <= 0) {
-    return { valid: false, message: "Payment amount must be greater than zero." };
+    return { valid: false, message: `${label} must be greater than zero.` };
   }
 
   return { valid: true, value: paise };

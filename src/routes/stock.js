@@ -7,6 +7,11 @@ const StockItem = require("../models/StockItem");
 const StockMovement = require("../models/StockMovement");
 const StockType = require("../models/StockType");
 const Supplier = require("../models/Supplier");
+const CustomerProductPrice = require("../models/CustomerProductPrice");
+const {
+  DEFAULT_GST_RATE_PERCENT,
+  validateTaxMetadata,
+} = require("../utils/gst");
 const {
   applyLegacyCap,
   parseOptionalPagination,
@@ -1451,6 +1456,8 @@ router.post(
         openingStock = 0,
         minimumStock = 0,
         notes = "",
+        hsnCode,
+        gstRatePercent,
       } = req.body;
 
 
@@ -1496,6 +1503,37 @@ router.post(
               "Unit must be PCS or Dozen.",
           });
       }
+
+
+      /* ------------------------------
+         FINISHED GOODS TAX METADATA
+      ------------------------------ */
+
+      const taxCheck =
+        validateTaxMetadata({
+          category,
+          hsnCode,
+          gstRatePercent,
+        });
+
+      if (!taxCheck.valid) {
+        return res
+          .status(400)
+          .json({
+            message: taxCheck.message,
+          });
+      }
+
+      const taxFields =
+        category === "finished_goods"
+          ? {
+              hsnCode:
+                taxCheck.value.hsnCode ?? "",
+              gstRatePercent:
+                taxCheck.value.gstRatePercent ??
+                DEFAULT_GST_RATE_PERCENT,
+            }
+          : {};
 
 
       /* ------------------------------
@@ -1695,6 +1733,8 @@ router.post(
             String(
               notes || ""
             ).trim(),
+
+          ...taxFields,
         });
 
 
@@ -1883,7 +1923,12 @@ router.put(
         unit,
         minimumStock,
         notes,
+        hsnCode,
+        gstRatePercent,
       } = req.body;
+
+      const originalCategory =
+        item.category;
 
 
       /* ------------------------------
@@ -2057,6 +2102,66 @@ router.put(
 
           item.unit =
             unit;
+        }
+      }
+
+
+      /* ======================================================
+         FINISHED GOODS TAX METADATA
+
+         Only Finished Goods carry HSN / GST. Leaving
+         Finished Goods clears them, and is blocked while
+         customer prices exist for the item.
+      ====================================================== */
+
+      const taxCheck =
+        validateTaxMetadata({
+          category: item.category,
+          hsnCode,
+          gstRatePercent,
+        });
+
+      if (!taxCheck.valid) {
+        return res
+          .status(400)
+          .json({
+            message: taxCheck.message,
+          });
+      }
+
+      if (
+        originalCategory === "finished_goods" &&
+        item.category !== "finished_goods"
+      ) {
+        const hasCustomerPrices =
+          await CustomerProductPrice.exists({
+            item: item._id,
+          });
+
+        if (hasCustomerPrices) {
+          return res
+            .status(409)
+            .json({
+              message:
+                "This product has customer prices, so it must stay in Finished Goods.",
+            });
+        }
+
+        item.hsnCode = undefined;
+        item.gstRatePercent = undefined;
+      }
+
+      if (item.category === "finished_goods") {
+        if (taxCheck.value.hsnCode !== undefined) {
+          item.hsnCode = taxCheck.value.hsnCode;
+        }
+
+        if (taxCheck.value.gstRatePercent !== undefined) {
+          item.gstRatePercent = taxCheck.value.gstRatePercent;
+        } else if (
+          originalCategory !== "finished_goods"
+        ) {
+          item.gstRatePercent = DEFAULT_GST_RATE_PERCENT;
         }
       }
 

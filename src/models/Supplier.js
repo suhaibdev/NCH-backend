@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { GSTIN_PATTERN } = require("../utils/gst");
 
 const supplierSchema = new mongoose.Schema(
   {
@@ -59,7 +60,7 @@ const supplierSchema = new mongoose.Schema(
       validate: {
         validator: (value) =>
           !value ||
-          /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/.test(
+          GSTIN_PATTERN.test(
             value
           ),
         message:

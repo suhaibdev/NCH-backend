@@ -1,9 +1,18 @@
 const mongoose = require("mongoose");
+const { GST_RATE_PERCENTS, HSN_PATTERN } = require("../utils/gst");
 
 const integerValidator = {
   validator: Number.isInteger,
   message: "Quantity must be a whole number.",
 };
+
+/*
+ * Tax metadata is allowed only on Finished Goods. In update-query context
+ * (no document) only the value format is checked; routes check the category.
+ */
+const isFinishedGoodsContext = (context) =>
+  !(context instanceof mongoose.Document) ||
+  context.category === "finished_goods";
 
 const stockItemSchema = new mongoose.Schema(
   {
@@ -84,6 +93,32 @@ const stockItemSchema = new mongoose.Schema(
       default: "",
       trim: true,
       maxlength: 500,
+    },
+
+    /*
+     * Finished Goods tax metadata (not a price). No schema default so other
+     * categories never carry these fields; a missing GST rate means 5%.
+     */
+    hsnCode: {
+      type: String,
+      trim: true,
+      validate: {
+        validator: function (value) {
+          if (value === "") return true;
+          return isFinishedGoodsContext(this) && HSN_PATTERN.test(value);
+        },
+        message: "HSN code must be 4 to 8 digits and is allowed only for Finished Goods.",
+      },
+    },
+
+    gstRatePercent: {
+      type: Number,
+      validate: {
+        validator: function (value) {
+          return isFinishedGoodsContext(this) && GST_RATE_PERCENTS.includes(value);
+        },
+        message: "GST rate is not allowed for this item.",
+      },
     },
   },
   {

@@ -18,7 +18,7 @@ Status tags used in this file: **Built** (working route and UI exist), **Partial
 12. Attendance
 13. Payroll and Payout
 14. Dashboard
-15. Planned: customer pricing and sales documents
+15. Customer pricing (Built) and sales documents (Planned)
 16. Planned: Labels
 17. Planned: portals, orders, notifications and analytics
 18. UI/UX standards
@@ -68,7 +68,8 @@ Admin  →  React frontend  →  Axios / REST  →  Express backend  →  Mongoo
 | Payout, Single | Built |
 | Payout history, edit, print, delete | Built |
 | Salary Slip (legacy page) | Partial (works only from router state; no slip for bulk lines) |
-| Customers | Partial (name, email, contact, GST only; no pricing fields) |
+| Customers (billing details, GSTIN and state, detail page) | Built |
+| Customer product prices, Finished Goods HSN and GST rate | Built (11A) |
 | Suppliers, Material Receiving, Supplier Accounting | Built |
 | Stock, Stock Types, Universal Search | Built |
 | Stock History | Built |
@@ -88,10 +89,10 @@ src/
 ├── App.jsx  index.jsx
 ├── components/   AdminLayout  AdminShell(.css)  Navbar(.css)  ProtectedRoute
 ├── config/       api.js  auth.js  axios.js
-├── utils/        businessDate.js  text.js  washerPayoutCycle.js
+├── utils/        businessDate.js  gst.js  text.js  washerPayoutCycle.js
 └── pages/
     ├── AdminCommon.css  AdminPortalPage  FactoryFlowPage  HomePage  Hero  Login  Products
-    ├── Customer/    CustomersPage
+    ├── Customer/    CustomersPage  CustomerDetailPage
     ├── Employees/   EmployeesPage  Attendance  PayoutPage  SalarySlip
     ├── Suppliers/   SuppliersPage  SupplierDetailPage  ReceiveMaterialPage
     └── Stock/       StockHomePage  StockPage  StockTypesPage  StockTypeProductsPage
@@ -102,7 +103,7 @@ src/
 
 `pages/Products.jsx` is a public marketing section on the home page; it is not the admin Products item. `WasherDetailFixed.jsx` is the live route for washer master data and rates; the name is legacy. There is no `StockHistoryPage`, `LabelsPage` or `WashingPage`.
 
-Backend: `index.js`; `src/routes/` (14 route files), `src/models/` (23 models), `src/middleware/` (auth, role, database readiness), `src/utils/` (helpers listed per feature below), `test/` (plain Node assert scripts, see Development Plan section 6).
+Backend: `index.js`; `src/routes/` (14 route files), `src/models/` (24 models), `src/middleware/` (auth, role, database readiness), `src/utils/` (helpers listed per feature below), `test/` (plain Node assert scripts, see Development Plan section 6).
 
 ## 5. Routes and navigation
 
@@ -115,6 +116,7 @@ Backend: `index.js`; `src/routes/` (14 route files), `src/models/` (23 models), 
 /admin/payout
 /admin/salary-slip                              (data only through router state)
 /admin/customers
+/admin/customers/:customerId                    details, Products and Prices
 /admin/suppliers
 /admin/suppliers/:supplierId
 /admin/suppliers/:supplierId/receive
@@ -382,13 +384,49 @@ Hard and permanent. `DELETE /api/payout/:id` and `DELETE /api/payout/bulk/:id` e
 
 **Partial.** `GET /api/dashboard` returns employee counts, today's attendance, recent employees and salary and advance totals for the month. It uses parallel reads and `lean()`; unused all-history advance data is not computed. The month salary card sums `Payout` and `BulkPayout` over the IST calendar month (fixed +05:30, bounds are IST midnight instants); month advance uses the IST month start at UTC midnight because attendance dates are stored that way. "Today" still uses server-local time (backlog).
 
-## 15. Planned: customer pricing and sales documents
+## 15. Customer pricing (Built) and sales documents (Planned)
 
-None of this exists in the code. `Customer` has only name, email, contact number, GST, a `stock` number and an `orders` array. `StockItem` has no price, HSN or GST field.
+### Final design decisions (approved, Step 11A)
 
-**Planned data:**
-- Customers store billing name, billing and shipping address, contact details and GSTIN. Customer-specific prices override the Finished Goods default selling price without changing stock or global pricing.
-- Finished Goods store a default selling price, HSN and a default GST rate of 5 percent. These are sales metadata and never produce a manufacturing cost.
+- NCH is registered in Uttar Pradesh, GST state code `09`.
+- Tax type is decided from the customer's `stateCode` (Step 11C): state `09` gives CGST + SGST, any other state gives IGST, and a customer with no GSTIN is treated as local (CGST + SGST).
+- GST is calculated **once on the invoice taxable total**, not per line, rounded to the nearest rupee with a separate round-off line (Step 11C).
+- **There is no default selling price.** Prices exist only per customer per product. A customer can be billed only for a product that has an active price assigned to that customer.
+- Finished Goods keep an HSN code and a GST rate. These are tax metadata, never prices or a manufacturing cost.
+- Allowed GST rates: **0, 0.25, 3, 5, 18, 40** percent. Default 5. (12 and 28 are rejected.)
+- Estimates, Invoices and Challans each get their own number series (later steps).
+- Documents keep immutable snapshots: each line copies the price, product name, unit, HSN and GST rate. Changing or deactivating a customer price never alters an existing document.
+
+### Built in Step 11A
+
+**Customer** (`models/Customer.js`, `routes/customers.js`, `utils/customerValidation.js`). All new fields are optional or defaulted, so existing customers needed no migration.
+- `name` (required), `email` (required, unique, lowercased on write), `billingName` (empty means use `name`), `contactPerson`, `contactNumber` (String, empty or exactly 10 digits; legacy numeric values are cast to strings on load), `gst` (the GSTIN; empty or a valid 15-character GSTIN whose prefix is a valid state code).
+- `stateCode`: derived from the GSTIN's first two digits and locked to it (a mismatch is rejected with 400). With no GSTIN, the admin must choose it manually. Valid codes are 01 to 24, 26, 27, 29 to 38 and 97; 25, 28 and 99 are rejected (`utils/gst.js`).
+- `billingAddress {line1, line2, city, pincode}`, `shippingSameAsBilling` (default true), `shippingAddress {line1, line2, city, pincode, stateCode}` (cleared when same as billing; otherwise line 1 and state are required). PIN codes are 6 digits.
+- `isActive` (default true; a legacy document without the field reads as active). Inactive customers cannot get new or changed prices.
+- Legacy `stock` and `orders` fields and the `POST /:id/order` stub are untouched (no caller). They should be removed in a later cleanup.
+- Indexes: existing unique `email`; new `{gst}` and `{isActive, name}`. Timestamps added.
+
+**CustomerProductPrice** (`models/CustomerProductPrice.js`): `customer`, `item` (a Finished Goods `StockItem`), `pricePaise` (integer, 1 to 100,000,000, that is up to Rs 10,00,000 per stock unit), `isActive`, timestamps. Unique `{customer, item}`; index `{item}`. The price is per the item's stock unit (PCS or Dozen). Rows are never hard-deleted; deactivating sets `isActive: false`.
+
+**Finished Goods tax metadata** (`models/StockItem.js`, `routes/stock.js`): `hsnCode` (empty or 4 to 8 digits) and `gstRatePercent` (allowed set above). No schema default, so Raw and Washed items never carry these fields; the schema and routes reject them for other categories. New Finished Goods get 5 percent; existing Finished Goods without the field are treated as 5 percent. Moving an item out of Finished Goods clears the fields and is blocked (409) while customer prices exist for it. Stock quantity and movement logic are unchanged. Edited in Stock Management (`/admin/stock/manage`), in the Add Product and Edit Product modals, shown only for Finished Goods.
+
+**Customer endpoints** (all admin-only under `/api/customers`):
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/` | Legacy array (cap 1000) or `?page/&limit` envelope; optional `?status=active\|inactive`, `?search=` |
+| GET | `/:id` | 400 bad id, 404 |
+| POST | `/` | 200 with the customer; 400 validation; 409 duplicate email |
+| PUT | `/:id` | Changes only the fields sent; cross-field rules checked on the merged result |
+| DELETE | `/:id` | 409 when any price row exists (deactivate instead) |
+| GET | `/:id/prices` | Always paginated (default 20, max 100); `?status=active` (default) `\|inactive\|all`; sorted active first, then product name |
+| PUT | `/:id/prices/:itemId` | Body `{ price: "125.50" }` in rupees, stored as paise. 201 created or 200 updated (also reactivates). Rejects inactive customers and non-Finished Goods items |
+| DELETE | `/:id/prices/:itemId` | Deactivates (idempotent); 404 when no row exists |
+
+**Frontend:** `/admin/customers` has the sectioned form (GSTIN auto-fills and locks the state), a status filter and whole-row click to `/admin/customers/:customerId`. The detail page shows the customer details and a Products and Prices section: add a product from a Finished Goods search, set the price in rupees, edit it inline, deactivate or reactivate it, 20 rows per page.
+
+### Planned (Steps 11B and later)
 
 **Document rules (approved):**
 
@@ -415,7 +453,7 @@ Approved direction; no code exists. The `User.role` enum lists `employee` and `c
 - Planned: enable/disable, forced session invalidation where practical, reset workflow, last login, activity logs and an audited read-only Admin "View As Customer" that never uses or reveals the password.
 
 **Customer portal and orders**
-- Customers see only Admin-assigned Finished Goods (a future `CustomerProductAssignment`), never factory stock, quantities or availability. Price priority: customer price, then product default price, then a document-specific Admin override. Master price changes affect future activity only; Orders, Estimates and Invoices keep immutable price snapshots.
+- Customers see only Admin-assigned Finished Goods (their active `CustomerProductPrice` rows), never factory stock, quantities or availability. There is no product default price: the customer price applies, optionally replaced by a document-specific Admin override. Price changes affect future activity only; Orders, Estimates and Invoices keep immutable price snapshots.
 - Order and Invoice are separate entities with separate counters. Orders may come from portal, phone, WhatsApp, in person, salesperson or Admin. Statuses: Received, Confirmed, Preparing, Ready to Ship, Invoiced, Dispatched, Completed, Cancelled. Lines keep requested and confirmed quantity; notes keep Customer, Admin and Factory visibility separately. No stock is deducted until Invoice finalization. A confirmed order may produce a non-financial Factory Order Slip. After invoicing, cancellation must follow Invoice reversal rules.
 - On Invoice finalization, one transaction validates Finished Goods, finalizes the invoice, deducts stock with movements, updates the Customer Invoice account, links any Order and optionally creates a notification. Customer account data is view-only; only Admin records payments.
 

@@ -7,6 +7,7 @@ const SupplierPayment = require("../models/SupplierPayment");
 const {
   getSupplierAccountSummary,
 } = require("../utils/supplierAccounting");
+const { GSTIN_PATTERN } = require("../utils/gst");
 
 const router = express.Router();
 
@@ -181,7 +182,7 @@ const getSupplierPayload = (body) => {
 
   if (
     payload.gstNumber &&
-    !/^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/.test(
+    !GSTIN_PATTERN.test(
       payload.gstNumber
     )
   ) {

@@ -45,8 +45,8 @@ Continue building the NCH Factory Management System in controlled, testable phas
 | HR | Payout print | Built | Bulk and single; physical print not verified |
 | HR | Payout delete | Built | Permanent, in a transaction |
 | HR | Salary Slip page | Partial | Router state only; no slip for bulk lines |
-| Customers | Customers (name, email, contact, GST) | Partial | Routes lack field validation |
-| Customers | Customer pricing fields | Planned | |
+| Customers | Customers (billing name and addresses, contact, GSTIN, state code, active flag) | Built | Step 11A. Server-side field validation; GSTIN locks the state; detail page at `/admin/customers/:customerId` |
+| Customers | Customer product prices | Built | Step 11A. Per customer per Finished Goods item, integer paise, deactivate only. No default selling price by design |
 | Suppliers | Supplier master data | Built | |
 | Suppliers | Material Receiving | Built | |
 | Suppliers | Supplier Accounting | Built | No overpayment, no advances |
@@ -56,7 +56,7 @@ Continue building the NCH Factory Management System in controlled, testable phas
 | Stock | Structured size and supplier identity | Built | |
 | Stock | Stock History | Partial | Backend endpoints exist; the page is missing |
 | Stock | Products | Partial | Navigation alias to Stock Management; no Product model |
-| Stock | Finished Goods HSN, GST and default selling price | Planned | |
+| Stock | Finished Goods HSN and GST rate | Built | Step 11A. GST rates 0, 0.25, 3, 5, 18, 40 (default 5); edited in Stock Management. A default selling price was dropped by design |
 | Factory | Factory Flow page | Built | Process Goods and Manufacturing cards |
 | Factory | Washers (master data, rates) | Built | |
 | Factory | Process Goods (send, complete) | Built | Two-step flow |
@@ -142,6 +142,9 @@ There is no test runner and no `test` script. The files are plain `assert` scrip
 | `test/payout-preview-equivalence.test.js` | Bounded payout previews equal the old full-history results |
 | `test/error-responses.test.js` | Generic 500 responses |
 | `test/supplier-accounting.test.js` | Paise parsing, payment rules |
+| `test/customer-gst.test.js` | GSTIN, GSTIN to state code, state code list, GST rates, HSN, Finished-Goods-only tax metadata |
+| `test/customer-pricing.test.js` | Rupees and paise conversion, price limits, Finished-Goods-only assignment, price schema and unique index |
+| `test/customer-validation.test.js` | Customer payload rules (state lock, shipping, phone, email), partial updates on legacy customers |
 | `test/washing.test.js` | Washing helpers (paise, size, charge, identity) |
 | `test/washing-session.test.js` | Send and complete transaction handling |
 | `test/manufacturing-session.test.js` | Manufacturing transaction handling |
@@ -189,7 +192,9 @@ Run these against a connected database before a release.
 - Edit: immutable fields rejected; the advance cap holds; raising a cut that breaks a later payout returns 409 `ADVANCE_CHRONOLOGY_CONFLICT`.
 - Delete restores advance and overlap eligibility. `bulk-legacy` returns 410.
 
-**Planned features (when built):** customer pricing overrides, Estimate (deducts stock, no HSN or GST), Invoice (deducts stock, HSN and GST), conversion without a second deduction, manual Challans with no stock effect, challan quantity caps, GST report from GST invoices only.
+**Customer pricing (Step 11A, needs live MongoDB):** create customers with and without a GSTIN; a state that does not match the GSTIN is rejected; a legacy customer can be deactivated without fixing old fields; assign, update, deactivate and reactivate a price; two simultaneous assignments of the same product end as one row; a non-Finished-Goods item is rejected; customer delete returns 409 once prices exist; moving a priced item out of Finished Goods returns 409.
+
+**Planned features (when built):** Estimate (deducts stock, no HSN or GST), Invoice (deducts stock, HSN and GST), conversion without a second deduction, manual Challans with no stock effect, challan quantity caps, GST report from GST invoices only.
 
 **Performance and UX:** paginated APIs return stable pages using their expected indexes; every page navigation shows a loading indicator; every API-backed page has loading, error with retry and empty states; duplicate submit is prevented.
 
@@ -206,8 +211,8 @@ Run these against a connected database before a release.
 | 5 | Three files are not prettier-clean. (This figure is from the task brief; the audit counted 32 files before later cleanups; the current set was not re-run.) | frontend `src/` |
 | 6 | List endpoints now have hard caps and optional `?page/?limit` (section 19 of the Architecture Plan). Payout create, edit and delete still load full history inside their transactions. `GET /api/payout` returns at most the newest 2000 single payouts; the legacy records table filters client-side. | backend routes |
 | 7 | Indexes added in code (build on next deploy, not yet verified live): `Attendance {date}`, `Employee {isActive,name}`, `Payout {paidOn,_id}`, `StockItem {stockType,productName}`. Query plans are unverified. | models |
-| 8 | Customer routes still lack field validation (email format, contact number, GST). Duplicate-email and bad-id errors are mapped, but the fields themselves are not checked. | `routes/customers.js` |
-| 9 | "Products" is only a navigation alias to Stock Management. There is no Product model, price, HSN or GST. | `AdminShell.jsx` |
+| 8 | `Customer.stock`, `Customer.orders` and `POST /api/customers/:id/order` are legacy with no caller. Remove them in a cleanup. Existing customers with an invalid stored GST must correct it on their next edit of the GSTIN. | `models/Customer.js`, `routes/customers.js` |
+| 9 | "Products" is only a navigation alias to Stock Management. There is no Product model; Finished Goods carry HSN and GST rate, and prices live per customer. | `AdminShell.jsx` |
 | 10 | The Stock History page is missing although the backend endpoints exist. | `/admin/stock/history` |
 | 11 | **Credential rotation is pending.** A secrets file was committed in earlier history, so those values must be treated as exposed. No values are recorded in these plans. | backend repo |
 
@@ -232,9 +237,9 @@ Browser behavior at 360/390/430px, tablet and desktop; physical or PDF print out
 Order of work (each item follows section 4 before it starts):
 
 1. **Stock History page** (`/admin/stock/history`). Use `GET /api/stock/history`. Filters: product, movement type, start and end date, main category. Columns: date, product, category, movement type, direction, quantity, balance before and after, reference. No movement deletion. Raise the 500-row cap with pagination.
-2. **Backlog hardening** (section 7): month and today in IST, payout edit audit trail, customer validation, pagination and indexes, split `PayoutPage.jsx`, scope the global button rule, prettier clean-up.
+2. **Backlog hardening** (section 7): month and today in IST, payout edit audit trail, pagination and indexes, split `PayoutPage.jsx`, scope the global button rule, prettier clean-up.
 3. **Labels.** Confirm the label specification first (`NCH_Architecture_Plan.md` section 16), then build the product selector, template, batch and date inputs, preview and PDF or print output.
-4. **Customer pricing and sales documents** as one coordinated phase: customer billing details and prices, Finished Goods selling price, HSN and 5% GST, Estimates, GST Invoices, Challans, the GST report (rules in `NCH_Architecture_Plan.md` section 15).
+4. **Sales documents** (rules in `NCH_Architecture_Plan.md` section 15). Step 11A (customer billing details, customer prices, Finished Goods HSN and GST rate) is built. Next: Estimates, GST Invoices with one GST calculation on the taxable total and a round-off line (11C), Challans, separate number series, then the GST report.
 5. **Reports:** inventory by category, low stock, stock movement, raw material consumption, manufacturing, wastage, Finished Goods production, payroll register, attendance summaries, monthly GST report. Build after operational workflows are stable.
 6. **Portals, orders, notifications and dashboard analytics** (`NCH_Architecture_Plan.md` section 17).
 7. **Performance Phase 2.** Only after live timing and query-plan evidence.
