@@ -35,18 +35,22 @@ const findAttendanceLocks = async ({ employeeIds = [], date, session = null }) =
   const objectIds = ids.map((id) => new mongoose.Types.ObjectId(id));
 
   const withSession = (query) => (session ? query.session(session) : query);
-  const [legacyPayouts, bulkPayouts] = await Promise.all([
+  const payoutQuery = () =>
     withSession(
       Payout.find({ employee: { $in: objectIds }, ...dateFilter })
         .select("employee startDate endDate salarySlipNumber")
         .lean()
-    ),
+    );
+  const bulkQuery = () =>
     withSession(
       BulkPayout.find({ "employees.employee": { $in: objectIds }, ...dateFilter })
         .select("payoutNumber startDate endDate employees.employee employees.employeeName")
         .lean()
-    ),
-  ]);
+    );
+  // A transaction session must never run two operations at once.
+  const [legacyPayouts, bulkPayouts] = session
+    ? [await payoutQuery(), await bulkQuery()]
+    : await Promise.all([payoutQuery(), bulkQuery()]);
 
   const locked = findCoveringPayouts(legacyPayouts, bulkPayouts, ids, dayKey);
 

@@ -122,10 +122,13 @@ const calculatePayrollMetrics = (attendance, start, end, hourlyRate) => {
 const loadEmployeePayoutHistory = async (employeeId, session = null) => {
   const objectId = new mongoose.Types.ObjectId(String(employeeId));
   const withSession = (query) => (session ? query.session(session) : query);
-  const [legacyPayouts, bulkPayouts] = await Promise.all([
-    withSession(Payout.find({ employee: objectId }).lean()),
-    withSession(BulkPayout.find({ 'employees.employee': objectId }).lean()),
-  ]);
+  const payoutQuery = () => withSession(Payout.find({ employee: objectId }).lean());
+  const bulkQuery = () => withSession(BulkPayout.find({ 'employees.employee': objectId }).lean());
+  // A session must never run two operations at once (MongoDB transactions do not
+  // support parallel operations), so session reads run one after the other.
+  const [legacyPayouts, bulkPayouts] = session
+    ? [await payoutQuery(), await bulkQuery()]
+    : await Promise.all([payoutQuery(), bulkQuery()]);
   return buildPayoutHistoryByEmployee(legacyPayouts, bulkPayouts).get(String(employeeId)) || [];
 };
 
@@ -797,12 +800,11 @@ router.post('/bulk', async (req, res) => {
     let savedPayout;
     await session.withTransaction(async () => {
       const objectIds = ids.map((id) => new mongoose.Types.ObjectId(id));
-      const [employees, attendance, legacyPayouts, bulkPayouts] = await Promise.all([
-        Employee.find({ _id: { $in: objectIds }, isActive: true }).session(session).lean(),
-        Attendance.find({ employee: { $in: objectIds }, date: { $lte: range.end } }).session(session).lean(),
-        Payout.find({ employee: { $in: objectIds } }).session(session).lean(),
-        BulkPayout.find({ 'employees.employee': { $in: objectIds } }).session(session).lean(),
-      ]);
+      // Sequential: a transaction session must never run operations in parallel.
+      const employees = await Employee.find({ _id: { $in: objectIds }, isActive: true }).session(session).lean();
+      const attendance = await Attendance.find({ employee: { $in: objectIds }, date: { $lte: range.end } }).session(session).lean();
+      const legacyPayouts = await Payout.find({ employee: { $in: objectIds } }).session(session).lean();
+      const bulkPayouts = await BulkPayout.find({ 'employees.employee': { $in: objectIds } }).session(session).lean();
       if (employees.length !== objectIds.length) {
         throw new Error('Every selected employee must exist and be active.');
       }
@@ -927,27 +929,28 @@ router.post('/', async (req, res) => {
       return res.status(400).json({ message: 'Remarks cannot exceed 500 characters.' });
     }
 
-    // A transaction is critical here to ensure atomicity: check for duplicates and save in one operation.
-    const session = await mongoose.startSession();
+    const overlapResponse = (overlap) =>
+      res.status(409).json({
+        message: 'A payout for an overlapping period already exists.',
+        code: 'PAYOUT_OVERLAP',
+        employeeName: employee.name,
+        overlap: getOverlapDetails(overlap),
+      });
 
-    try {
-      session.startTransaction();
+    // Validate BEFORE starting a transaction. These reads use no session, so
+    // running them in parallel is safe. Overlap and advance recovery consider
+    // BOTH single payouts and bulk payout lines.
+    const [allAttendance, payoutHistory] = await Promise.all([
+      Attendance.find({ employee: employeeId, date: { $lte: range.end } }).lean(),
+      loadEmployeePayoutHistory(employeeId),
+    ]);
 
-      // Overlap and advance recovery consider BOTH single payouts and bulk payout lines.
-      const [allAttendance, payoutHistory] = await Promise.all([
-        Attendance.find({ employee: employeeId, date: { $lte: range.end } }).session(session).lean(),
-        loadEmployeePayoutHistory(employeeId, session),
-      ]);
+    const overlap = findOverlappingPayout(payoutHistory, range.start, range.end);
+    if (overlap) {
+      return overlapResponse(overlap);
+    }
 
-      const overlap = findOverlappingPayout(payoutHistory, range.start, range.end);
-      if (overlap) {
-        const overlapError = new Error('A payout for an overlapping period already exists.');
-        overlapError.code = 'PAYOUT_OVERLAP';
-        overlapError.overlap = getOverlapDetails(overlap);
-        throw overlapError;
-      }
-
-      const previousPayouts = filterPayoutsEndingBy(payoutHistory, range.end);
+    const previousPayouts = filterPayoutsEndingBy(payoutHistory, range.end);
 
     const hourlyRate = roundCurrency(employee.baseDailySalary / STANDARD_WORK_HOURS);
     const payroll = calculatePayrollMetrics(
@@ -984,7 +987,24 @@ router.post('/', async (req, res) => {
     }
     const netSalary = netCheck.netSalary;
 
-    const payout = new Payout({
+    // The transaction only covers the writes (counter + payout), with a
+    // sequential overlap re-check against payouts created in the meantime.
+    const session = await mongoose.startSession();
+    try {
+      session.startTransaction();
+
+      const latestHistory = await loadEmployeePayoutHistory(employeeId, session);
+      const latestOverlap = findOverlappingPayout(latestHistory, range.start, range.end);
+      if (latestOverlap) {
+        const overlapError = new Error('A payout for an overlapping period already exists.');
+        overlapError.code = 'PAYOUT_OVERLAP';
+        overlapError.overlapRecord = latestOverlap;
+        throw overlapError;
+      }
+
+      const salarySlipNumber = await generatePayoutNumber(session);
+
+      const payout = new Payout({
       employee: employeeId,
       startDate,
       endDate,
@@ -1011,7 +1031,7 @@ router.post('/', async (req, res) => {
       // Hardcoded for now, but with a clear TODO. Never trust client-provided security-sensitive data.
       generatedBy: "Admin", // TODO: Replace with authenticated user (req.user.id)
       // Improved uniqueness for salary slip numbers to prevent collisions.
-      salarySlipNumber: await generatePayoutNumber(session),
+      salarySlipNumber,
     });
 
       // `save()` returns a single document, not an array.
@@ -1019,28 +1039,29 @@ router.post('/', async (req, res) => {
 
       await session.commitTransaction();
 
-    await saved.populate('employee', 'name workType baseDailySalary');
+      await saved.populate('employee', 'name workType baseDailySalary');
 
-    res.status(201).json(saved);
+      return res.status(201).json(saved);
     } catch (err) {
-      // Abort the transaction in case of any error.
-      await session.abortTransaction();
-      // Distinguish between client errors (like overlap) and server errors.
-      if (err.code === 'PAYOUT_OVERLAP') {
-        return res.status(409).json({
-          message: err.message,
-          code: err.code,
-          employeeName: employee.name,
-          overlap: err.overlap,
-        });
+      // Abort only a transaction that is still active (idempotent).
+      if (session.inTransaction()) {
+        try {
+          await session.abortTransaction();
+        } catch (abortErr) {
+          // Never let an abort failure replace the original response.
+          console.error('PAYOUT ABORT ERROR:', abortErr);
+        }
       }
-    console.error(err);
-    res.status(500).json({
-      message: err.message || 'Failed to create payout.',
-    });
+      if (err.code === 'PAYOUT_OVERLAP') {
+        return overlapResponse(err.overlapRecord);
+      }
+      console.error(err);
+      return res.status(500).json({
+        message: err.message || 'Failed to create payout.',
+      });
     } finally {
-      // Ensure the session is always closed to prevent resource leaks.
-      session.endSession();
+      // End the session exactly once.
+      await session.endSession();
     }
   } catch (err) {
     console.error(err);

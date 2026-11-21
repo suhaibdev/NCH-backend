@@ -352,17 +352,16 @@ router.post("/bulk", async (req, res) => {
   try {
     let result;
     await session.withTransaction(async () => {
-      const [employees, existingRecords] = await Promise.all([
-        Employee.find({ _id: { $in: employeeIds }, isActive: true })
-          .session(session)
-          .lean(),
-        Attendance.find({
-          employee: { $in: employeeIds },
-          date: { $gte: bounds.date, $lt: bounds.nextDate },
-        })
-          .session(session)
-          .lean(),
-      ]);
+      // Sequential: a transaction session must never run operations in parallel.
+      const employees = await Employee.find({ _id: { $in: employeeIds }, isActive: true })
+        .session(session)
+        .lean();
+      const existingRecords = await Attendance.find({
+        employee: { $in: employeeIds },
+        date: { $gte: bounds.date, $lt: bounds.nextDate },
+      })
+        .session(session)
+        .lean();
 
       if (employees.length !== employeeIds.length) {
         throw new Error("One or more selected employees are no longer active.");
