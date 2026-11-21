@@ -1030,175 +1030,134 @@ router.get(
    Optional:
    ?itemId=
    ?movementType=
-   ?startDate=
+   ?category=
+   ?search=   (product name)
+   ?startDate=  YYYY-MM-DD (Asia/Kolkata day)
    ?endDate=
+   ?page= &limit=  (paged mode: { items, page, limit, total, totalPages };
+                    without them: legacy array, max 500)
 ========================================================== */
 
-router.get(
-  "/history",
-  async (req, res) => {
-    try {
-      const {
-        itemId,
-        movementType,
-        startDate,
-        endDate,
-      } = req.query;
+const HISTORY_CAP = 500;
+const IST_DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/;
 
+// Asia/Kolkata (UTC+05:30, no DST) day bounds for a YYYY-MM-DD value.
+const parseHistoryDate = (value, endOfDay) => {
+  const text = String(value).trim().slice(0, 10);
+  if (!IST_DATE_ONLY.test(text)) return null;
+  const date = new Date(
+    `${text}T${endOfDay ? "23:59:59.999" : "00:00:00.000"}+05:30`
+  );
+  if (Number.isNaN(date.getTime())) return null;
+  // Reject overflow such as 2026-02-31 (JS would roll it into March).
+  const roundTrip = new Date(date.getTime() + 5.5 * 60 * 60 * 1000)
+    .toISOString()
+    .slice(0, 10);
+  return roundTrip === text ? date : null;
+};
 
-      const query = {};
+router.get("/history", async (req, res) => {
+  try {
+    const { itemId, movementType, category, search, startDate, endDate } =
+      req.query;
 
+    const query = {};
 
-      if (itemId) {
-        if (
-          !mongoose.Types.ObjectId.isValid(
-            itemId
-          )
-        ) {
-          return res
-            .status(400)
-            .json({
-              message:
-                "Invalid stock item ID.",
-            });
-        }
-
-
-        query.item =
-          itemId;
+    if (itemId) {
+      if (!mongoose.Types.ObjectId.isValid(itemId)) {
+        return res.status(400).json({ message: "Invalid stock item ID." });
       }
-
-
-      if (
-        movementType
-      ) {
-        query.movementType =
-          movementType;
-      }
-
-
-      if (
-        startDate ||
-        endDate
-      ) {
-        query.movementDate =
-          {};
-
-
-        if (startDate) {
-          const start =
-            new Date(
-              startDate
-            );
-
-
-          if (
-            Number.isNaN(
-              start.getTime()
-            )
-          ) {
-            return res
-              .status(400)
-              .json({
-                message:
-                  "Invalid start date.",
-              });
-          }
-
-
-          start.setHours(
-            0,
-            0,
-            0,
-            0
-          );
-
-
-          query.movementDate.$gte =
-            start;
-        }
-
-
-        if (endDate) {
-          const end =
-            new Date(
-              endDate
-            );
-
-
-          if (
-            Number.isNaN(
-              end.getTime()
-            )
-          ) {
-            return res
-              .status(400)
-              .json({
-                message:
-                  "Invalid end date.",
-              });
-          }
-
-
-          end.setHours(
-            23,
-            59,
-            59,
-            999
-          );
-
-
-          query.movementDate.$lte =
-            end;
-        }
-      }
-
-
-      const history =
-        await StockMovement.find(
-          query
-        )
-          .populate({
-            path: "item",
-            select: "productName category stockType supplier size unit currentStock minimumStock",
-            populate: [
-              {
-                path: "supplier",
-                select: "name",
-              },
-              {
-                path: "stockType",
-                select: "name category requiresSupplier requiresSize",
-              },
-            ],
-          })
-          .sort({
-            movementDate: -1,
-            createdAt: -1,
-          })
-          .limit(500)
-          .lean();
-
-
-      return res.json(
-        history
-      );
-    } catch (err) {
-      console.error(
-        "GET STOCK HISTORY ERROR:",
-        err
-      );
-
-
-      return res
-        .status(500)
-        .json({
-          message:
-            "Unable to load stock history.",
-        });
+      query.item = itemId;
     }
+
+    if (movementType) {
+      if (
+        !StockMovement.schema
+          .path("movementType")
+          .enumValues.includes(movementType)
+      ) {
+        return res.status(400).json({ message: "Invalid movement type." });
+      }
+      query.movementType = movementType;
+    }
+
+    if (category) {
+      if (!VALID_CATEGORIES.includes(category)) {
+        return res.status(400).json({ message: "Invalid stock category." });
+      }
+      query.category = category;
+    }
+
+    const searchText = cleanText(search || "");
+    if (searchText) {
+      query.productName = {
+        $regex: escapeRegex(searchText),
+        $options: "i",
+      };
+    }
+
+    if (startDate || endDate) {
+      query.movementDate = {};
+
+      if (startDate) {
+        const start = parseHistoryDate(startDate, false);
+        if (!start) {
+          return res.status(400).json({ message: "Invalid start date." });
+        }
+        query.movementDate.$gte = start;
+      }
+
+      if (endDate) {
+        const end = parseHistoryDate(endDate, true);
+        if (!end) {
+          return res.status(400).json({ message: "Invalid end date." });
+        }
+        query.movementDate.$lte = end;
+      }
+
+      if (
+        query.movementDate.$gte &&
+        query.movementDate.$lte &&
+        query.movementDate.$gte > query.movementDate.$lte
+      ) {
+        return res
+          .status(400)
+          .json({ message: "Start date cannot be after end date." });
+      }
+    }
+
+    const buildQuery = () =>
+      StockMovement.find(query)
+        .populate({
+          path: "item",
+          select:
+            "productName category stockType supplier size unit currentStock minimumStock",
+          populate: [
+            { path: "supplier", select: "name" },
+            {
+              path: "stockType",
+              select: "name category requiresSupplier requiresSize",
+            },
+          ],
+        })
+        .sort({ movementDate: -1, createdAt: -1, _id: -1 })
+        .lean();
+
+    return await sendListResponse(
+      res,
+      req.query,
+      { cap: HISTORY_CAP, maxLimit: 100, defaultLimit: 20 },
+      buildQuery,
+      () => StockMovement.countDocuments(query)
+    );
+  } catch (err) {
+    console.error("GET STOCK HISTORY ERROR:", err);
+
+    return res.status(500).json({
+      message: "Unable to load stock history.",
+    });
   }
-);
+});
 
 
 /* ==========================================================

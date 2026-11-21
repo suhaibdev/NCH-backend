@@ -71,7 +71,7 @@ Admin  →  React frontend  →  Axios / REST  →  Express backend  →  Mongoo
 | Customers | Partial (name, email, contact, GST only; no pricing fields) |
 | Suppliers, Material Receiving, Supplier Accounting | Built |
 | Stock, Stock Types, Universal Search | Built |
-| Stock History | Partial (backend endpoints only) |
+| Stock History | Built |
 | Washers, Process Goods, Washer advances and payouts | Built |
 | Manufacturing (create, history, reversal) | Built |
 | Products | Partial (a navigation alias to Stock Management; no Product model) |
@@ -230,11 +230,11 @@ manufacturing_reverse_in  manufacturing_reverse_out
 
 ### Stock History
 
-**Partial.** `GET /api/stock/history` (capped at 500 rows) and `GET /api/stock/:id/history` exist. The Stock Management page shows per-item history. The `/admin/stock/history` page is Planned. Planned filters: product, movement type, date range, main category. Movements are never deletable from it.
+**Built.** `/admin/stock/history` is a read-only page with filters (product, movement type, main category, From/To date in Asia/Kolkata) and server-side pagination (20 per page). `GET /api/stock/history` accepts `category`, `search`, `startDate`, `endDate`, `movementType`, `itemId`, plus optional `page`/`limit` (max 100). With paging params it returns `{ items, page, limit, total, totalPages }`; without them it returns the legacy array capped at 500. `GET /api/stock/:id/history` also exists and the Stock Management page shows per-item history. Movements are never deletable from it.
 
 ## 8. Stock Home, Universal Search and Stock Type pages
 
-**Stock Home (`/admin/stock`) has exactly two cards: Stock Management and Stock Types.** It also holds Universal Stock Search. Process Goods and Manufacturing are reached from Factory Flow (`/admin/factory-flow`), which has two whole-card links.
+**Stock Home (`/admin/stock`) has exactly three cards: Stock Management, Stock Types and Stock History.** It also holds Universal Stock Search. Process Goods and Manufacturing are reached from Factory Flow (`/admin/factory-flow`), which has two whole-card links.
 
 **Universal Stock Search** calls `GET /api/stock?search=<QUERY>` against the single `StockItem` collection, searching product name and Stock Type name across all categories. Results show Product, Main Category, Stock Type, Current Stock, Unit, Minimum Stock and Status. Filters: main category, Stock Type, status (All, In Stock, Low, Out). Searches are debounced and superseded requests are cancelled.
 
