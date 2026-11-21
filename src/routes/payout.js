@@ -22,6 +22,7 @@ const {
   isPresentByWorkHours,
   validateNetSalary,
 } = require('../utils/payroll');
+const payoutEdit = require('../utils/payoutEdit');
 
 // ===============================================
 // HELPER FUNCTIONS
@@ -136,12 +137,8 @@ const loadEmployeePayoutHistory = async (employeeId, session = null) => {
 // BULK PAYOUT HELPERS
 // ===============================================
 
-const VALID_PAYMENT_METHODS = [
-  'cash',
-  'upi',
-  'bank',
-  'cheque',
-];
+// Shared with the payout edit rules (cash, upi, bank, cheque).
+const { VALID_PAYMENT_METHODS } = payoutEdit;
 
 /**
  * Groups mongoose records by employee ID.
@@ -1267,6 +1264,174 @@ router.patch("/:id/status", async (req, res) => {
       message: err.message,
     });
 
+  }
+});
+
+// ===============================================
+// EDIT PAYOUTS (payment method, advance cut, other deduction)
+// ===============================================
+// Rules live in utils/payoutEdit.js. All validation runs before a transaction;
+// inside it, data is re-read sequentially and re-validated before one write.
+
+const editFailure = (result) => {
+  const error = new Error(result.message);
+  error.editResult = result;
+  return error;
+};
+
+const sendEditFailure = (res, result) => {
+  const { ok, status, ...body } = result;
+  return res.status(status).json(body);
+};
+
+const abortIfActive = async (session, label) => {
+  if (!session.inTransaction()) return;
+  try {
+    await session.abortTransaction();
+  } catch (abortErr) {
+    console.error(`${label} ABORT ERROR:`, abortErr);
+  }
+};
+
+const findPopulatedPayout = (id) =>
+  Payout.findById(id).populate('employee', 'name workType baseDailySalary');
+
+/** Attendance + payout history for bulk lines whose amounts change. */
+const loadBulkEditContext = async (bulk, edits, session = null) => {
+  const ids = payoutEdit.getBulkChangedEmployeeIds(bulk, edits);
+  const contexts = new Map();
+  if (ids.length === 0) return contexts;
+
+  const objectIds = ids.map((id) => new mongoose.Types.ObjectId(id));
+  const withSession = (query) => (session ? query.session(session) : query);
+  const attendanceQuery = () => withSession(Attendance.find({ employee: { $in: objectIds } }).lean());
+  const payoutQuery = () => withSession(Payout.find({ employee: { $in: objectIds } }).lean());
+  const bulkQuery = () => withSession(BulkPayout.find({ 'employees.employee': { $in: objectIds } }).lean());
+  // A session must never run two operations at once.
+  const [attendance, legacyPayouts, bulkPayouts] = session
+    ? [await attendanceQuery(), await payoutQuery(), await bulkQuery()]
+    : await Promise.all([attendanceQuery(), payoutQuery(), bulkQuery()]);
+
+  const attendanceByEmployee = groupByEmployee(attendance);
+  const historyByEmployee = buildPayoutHistoryByEmployee(legacyPayouts, bulkPayouts);
+  ids.forEach((id) => {
+    contexts.set(id, {
+      attendance: attendanceByEmployee.get(id) || [],
+      history: historyByEmployee.get(id) || [],
+    });
+  });
+  return contexts;
+};
+
+router.patch('/bulk/:id', async (req, res) => {
+  const { id } = req.params;
+  if (!mongoose.Types.ObjectId.isValid(id)) {
+    return res.status(400).json({ message: 'Invalid bulk payout ID.' });
+  }
+  const parsed = payoutEdit.parseBulkEditBody(req.body);
+  if (!parsed.ok) return sendEditFailure(res, parsed);
+  const { edits } = parsed;
+
+  // Validate before any transaction (no session: parallel reads are fine).
+  try {
+    const bulk = await BulkPayout.findById(id).lean();
+    if (!bulk) return res.status(404).json({ message: 'Bulk payout not found.' });
+    const contexts = await loadBulkEditContext(bulk, edits);
+    const plan = payoutEdit.planBulkEdit(bulk, edits, contexts);
+    if (!plan.ok) return sendEditFailure(res, plan);
+    if (plan.noop) return res.json({ payout: bulk });
+  } catch (err) {
+    console.error('BULK PAYOUT EDIT ERROR:', err);
+    return res.status(500).json({ message: 'Unable to edit bulk payout.' });
+  }
+
+  const session = await mongoose.startSession();
+  try {
+    session.startTransaction();
+    const fresh = await BulkPayout.findById(id).session(session).lean();
+    if (!fresh) throw editFailure({ ok: false, status: 404, message: 'Bulk payout not found.' });
+    const contexts = await loadBulkEditContext(fresh, edits, session);
+    const plan = payoutEdit.planBulkEdit(fresh, edits, contexts);
+    if (!plan.ok) throw editFailure(plan);
+    if (!plan.noop) {
+      await BulkPayout.updateOne({ _id: fresh._id }, { $set: plan.set }, { session, runValidators: true });
+    }
+    await session.commitTransaction();
+  } catch (err) {
+    await abortIfActive(session, 'BULK PAYOUT EDIT');
+    if (err.editResult) return sendEditFailure(res, err.editResult);
+    console.error('BULK PAYOUT EDIT ERROR:', err);
+    return res.status(500).json({ message: 'Unable to edit bulk payout.' });
+  } finally {
+    await session.endSession();
+  }
+
+  try {
+    const updated = await BulkPayout.findById(id).lean();
+    return res.json({ payout: updated });
+  } catch (err) {
+    console.error('BULK PAYOUT EDIT READ ERROR:', err);
+    return res.status(500).json({ message: 'Bulk payout was updated but could not be reloaded.' });
+  }
+});
+
+router.patch('/:id', async (req, res) => {
+  const { id } = req.params;
+  if (!mongoose.Types.ObjectId.isValid(id)) {
+    return res.status(400).json({ message: 'Invalid payout ID.' });
+  }
+  const parsed = payoutEdit.parseSingleEditBody(req.body);
+  if (!parsed.ok) return sendEditFailure(res, parsed);
+  const { edits } = parsed;
+
+  let employeeId;
+  let employeeName;
+  // Validate before any transaction (no session: parallel reads are fine).
+  try {
+    const payout = await Payout.findById(id).lean();
+    if (!payout) return res.status(404).json({ message: 'Payout not found.' });
+    employeeId = String(payout.employee);
+    const [employee, attendance, history] = await Promise.all([
+      Employee.findById(employeeId).select('name').lean(),
+      Attendance.find({ employee: employeeId }).lean(),
+      loadEmployeePayoutHistory(employeeId),
+    ]);
+    employeeName = employee?.name;
+    const plan = payoutEdit.planSingleEdit(payout, edits, { attendance, history, employeeName });
+    if (!plan.ok) return sendEditFailure(res, plan);
+    if (plan.noop) return res.json(await findPopulatedPayout(id));
+  } catch (err) {
+    console.error('PAYOUT EDIT ERROR:', err);
+    return res.status(500).json({ message: 'Unable to edit payout.' });
+  }
+
+  const session = await mongoose.startSession();
+  try {
+    session.startTransaction();
+    const fresh = await Payout.findById(id).session(session).lean();
+    if (!fresh) throw editFailure({ ok: false, status: 404, message: 'Payout not found.' });
+    const history = await loadEmployeePayoutHistory(employeeId, session);
+    const attendance = await Attendance.find({ employee: employeeId }).session(session).lean();
+    const plan = payoutEdit.planSingleEdit(fresh, edits, { attendance, history, employeeName });
+    if (!plan.ok) throw editFailure(plan);
+    if (!plan.noop) {
+      await Payout.updateOne({ _id: fresh._id }, { $set: plan.set }, { session, runValidators: true });
+    }
+    await session.commitTransaction();
+  } catch (err) {
+    await abortIfActive(session, 'PAYOUT EDIT');
+    if (err.editResult) return sendEditFailure(res, err.editResult);
+    console.error('PAYOUT EDIT ERROR:', err);
+    return res.status(500).json({ message: 'Unable to edit payout.' });
+  } finally {
+    await session.endSession();
+  }
+
+  try {
+    return res.json(await findPopulatedPayout(id));
+  } catch (err) {
+    console.error('PAYOUT EDIT READ ERROR:', err);
+    return res.status(500).json({ message: 'Payout was updated but could not be reloaded.' });
   }
 });
 
