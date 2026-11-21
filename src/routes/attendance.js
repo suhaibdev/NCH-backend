@@ -4,6 +4,7 @@ const { sendServerError } = require("../utils/httpErrors");
 const router = express.Router();
 const Attendance = require("../models/Attendance");
 const Employee = require("../models/Employee");
+const { sendListResponse } = require("../utils/listQuery");
 const { isPresentByWorkHours, STANDARD_WORK_HOURS, toFiniteNumber } = require("../utils/payroll");
 const {
   ATTENDANCE_LOCK_CODE,
@@ -18,6 +19,11 @@ const respondIfLocked = async (res, employeeIds, date) => {
   res.status(409).json(lockedResponseBody(locked));
   return true;
 };
+
+const ATTENDANCE_LIST_CAP = 2000;
+const ATTENDANCE_RANGE_CAP = 10000;
+const MAX_RANGE_DAYS = 366;
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 const hasValidWorkHours = (value) => Number.isFinite(value) && value >= 0 && value <= 8;
 
@@ -90,27 +96,48 @@ const normalizeAttendanceValues = ({ present, workHours, overtime, advancePaymen
   };
 };
 
-// Get all attendance records
+// Get all attendance records (newest first; capped unless ?page/?limit is sent)
 router.get("/", async (req, res) => {
   try {
-    const attendance = await Attendance.find().populate("employee", "name").sort({ date: -1 });
-    res.json(attendance);
+    await sendListResponse(
+      res,
+      req.query,
+      { cap: ATTENDANCE_LIST_CAP },
+      () => Attendance.find().populate("employee", "name").sort({ date: -1, _id: -1 }).lean(),
+      () => Attendance.estimatedDocumentCount()
+    );
   } catch (err) {
     sendServerError(res, "GET ATTENDANCE", err);
   }
 });
 
-// Get attendance by date range
+// Get attendance by date range (inclusive, both YYYY-MM-DD)
 router.get("/range", async (req, res) => {
+  const start = getDateOnlyBounds(req.query.startDate);
+  const end = getDateOnlyBounds(req.query.endDate);
+  if (!start || !end) {
+    return res
+      .status(400)
+      .json({ message: "Start date and end date are required in YYYY-MM-DD format." });
+  }
+  if (start.date > end.date) {
+    return res.status(400).json({ message: "Start date cannot be after end date." });
+  }
+  if ((end.date - start.date) / DAY_MS > MAX_RANGE_DAYS) {
+    return res
+      .status(400)
+      .json({ message: `Date range cannot exceed ${MAX_RANGE_DAYS} days.` });
+  }
+
   try {
-    const { startDate, endDate } = req.query;
-    const attendance = await Attendance.find({
-      date: {
-        $gte: new Date(startDate),
-        $lte: new Date(endDate),
-      },
-    }).populate("employee", "name");
-    res.json(attendance);
+    const filter = { date: { $gte: start.date, $lte: end.date } };
+    await sendListResponse(
+      res,
+      req.query,
+      { cap: ATTENDANCE_RANGE_CAP },
+      () => Attendance.find(filter).populate("employee", "name").lean(),
+      () => Attendance.countDocuments(filter)
+    );
   } catch (err) {
     sendServerError(res, "GET ATTENDANCE RANGE", err);
   }
@@ -143,13 +170,19 @@ router.get("/bulk", async (req, res) => {
 
 // Get attendance by employee
 router.get("/employee/:employeeId", async (req, res) => {
+  if (!mongoose.isValidObjectId(req.params.employeeId)) {
+    return res.status(400).json({ message: "Invalid employee ID." });
+  }
+
   try {
-    const attendance = await Attendance.find({
-      employee: req.params.employeeId,
-    })
-      .populate("employee", "name")
-      .sort({ date: -1 });
-    res.json(attendance);
+    const filter = { employee: req.params.employeeId };
+    await sendListResponse(
+      res,
+      req.query,
+      { cap: ATTENDANCE_LIST_CAP },
+      () => Attendance.find(filter).populate("employee", "name").sort({ date: -1 }).lean(),
+      () => Attendance.countDocuments(filter)
+    );
   } catch (err) {
     sendServerError(res, "GET EMPLOYEE ATTENDANCE", err);
   }

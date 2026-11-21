@@ -44,5 +44,7 @@ const attendanceSchema = new mongoose.Schema({
 
 // Ensure one attendance record per employee per day
 attendanceSchema.index({ employee: 1, date: 1 }, { unique: true });
+// Supports date-only range queries (register, bulk load, dashboard, payout preview).
+attendanceSchema.index({ date: 1 });
 
 module.exports = mongoose.model('Attendance', attendanceSchema);

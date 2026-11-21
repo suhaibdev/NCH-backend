@@ -2,14 +2,23 @@ const express = require('express');
 const { sendServerError } = require("../utils/httpErrors");
 const router = express.Router();
 const Employee = require('../models/Employee');
+const { sendListResponse } = require('../utils/listQuery');
 
 // =====================================
 // Get all employees
 // =====================================
+// Legacy callers get the full array (capped); ?page/?limit returns a paged envelope.
+const EMPLOYEE_LIST_CAP = 1000;
+
 router.get('/', async (req, res) => {
   try {
-    const employees = await Employee.find();
-    res.json(employees);
+    await sendListResponse(
+      res,
+      req.query,
+      { cap: EMPLOYEE_LIST_CAP },
+      () => Employee.find().sort({ _id: 1 }),
+      () => Employee.countDocuments()
+    );
   } catch (err) {
     sendServerError(res, "GET EMPLOYEES", err);
   }

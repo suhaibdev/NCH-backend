@@ -36,20 +36,13 @@ const calculateNetSalary = (grossSalary, advanceDeducted, otherDeduction) =>
 const roundCurrency = (value) => Math.round(value * 100) / 100;
 
 /**
- * Lifetime advance status for an employee.
- * `payoutRecords` may mix single Payout records and BulkPayout employee
- * lines (see buildPayoutHistoryByEmployee) so recoveries are never counted twice.
+ * Advance status from already-summed totals (the preview endpoints sum in the
+ * database instead of loading every record). Same rounding as
+ * calculateAdvanceStatus, which delegates here.
  */
-const calculateAdvanceStatus = (attendanceRecords, payoutRecords) => {
-  const totalAdvanceTaken = roundCurrency(attendanceRecords.reduce(
-    (sum, item) => sum + (item.advancePayment || 0),
-    0
-  ));
-
-  const advanceRecovered = roundCurrency(payoutRecords.reduce(
-    (sum, item) => sum + (item.advanceDeducted || 0),
-    0
-  ));
+const advanceStatusFromTotals = (totalAdvanceTakenSum, advanceRecoveredSum) => {
+  const totalAdvanceTaken = roundCurrency(Number(totalAdvanceTakenSum) || 0);
+  const advanceRecovered = roundCurrency(Number(advanceRecoveredSum) || 0);
 
   return {
     totalAdvanceTaken,
@@ -57,6 +50,17 @@ const calculateAdvanceStatus = (attendanceRecords, payoutRecords) => {
     remainingAdvance: roundCurrency(Math.max(0, totalAdvanceTaken - advanceRecovered)),
   };
 };
+
+/**
+ * Lifetime advance status for an employee.
+ * `payoutRecords` may mix single Payout records and BulkPayout employee
+ * lines (see buildPayoutHistoryByEmployee) so recoveries are never counted twice.
+ */
+const calculateAdvanceStatus = (attendanceRecords, payoutRecords) =>
+  advanceStatusFromTotals(
+    attendanceRecords.reduce((sum, item) => sum + (item.advancePayment || 0), 0),
+    payoutRecords.reduce((sum, item) => sum + (item.advanceDeducted || 0), 0)
+  );
 
 /** Net salary must not go below zero (same rule as bulk payouts). */
 const validateNetSalary = (grossSalary, advanceDeducted, otherDeduction, employeeName) => {
@@ -73,6 +77,7 @@ const validateNetSalary = (grossSalary, advanceDeducted, otherDeduction, employe
 
 module.exports = {
   STANDARD_WORK_HOURS,
+  advanceStatusFromTotals,
   calculateAdvanceStatus,
   calculateNetSalary,
   validateNetSalary,

@@ -119,6 +119,14 @@ stockItemSchema.index({
 });
 
 /*
+ * Supports the Stock Type page filter, type product counts and delete guard.
+ */
+stockItemSchema.index({
+  stockType: 1,
+  productName: 1,
+});
+
+/*
  * Low-stock status is calculated automatically.
  */
 stockItemSchema.virtual("isLowStock").get(

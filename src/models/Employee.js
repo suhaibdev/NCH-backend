@@ -46,4 +46,7 @@ const employeeSchema = new mongoose.Schema(
   },
 );
 
+// Supports active-employee lookups sorted by name.
+employeeSchema.index({ isActive: 1, name: 1 });
+
 module.exports = mongoose.model('Employee', employeeSchema);

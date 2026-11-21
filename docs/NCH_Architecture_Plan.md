@@ -60,7 +60,7 @@ Admin  →  React frontend  →  Axios / REST  →  Express backend  →  Mongoo
 |---|---|
 | Authentication | Built |
 | Admin Shell (navigation) | Built |
-| Dashboard | Partial (month salary uses the UTC month) |
+| Dashboard | Partial ("today" counts use server-local time) |
 | Employees | Built |
 | Attendance, Bulk | Built |
 | Attendance, Single | Built |
@@ -380,7 +380,7 @@ Hard and permanent. `DELETE /api/payout/:id` and `DELETE /api/payout/bulk/:id` e
 
 ## 14. Dashboard
 
-**Partial.** `GET /api/dashboard` returns employee counts, today's attendance, recent employees and salary and advance totals for the month. It uses parallel reads and `lean()`; unused all-history advance data is not computed. The month salary card sums `Payout` and `BulkPayout`, but its month bounds are UTC, not IST (backlog). "Today" uses server-local time.
+**Partial.** `GET /api/dashboard` returns employee counts, today's attendance, recent employees and salary and advance totals for the month. It uses parallel reads and `lean()`; unused all-history advance data is not computed. The month salary card sums `Payout` and `BulkPayout` over the IST calendar month (fixed +05:30, bounds are IST midnight instants); month advance uses the IST month start at UTC midnight because attendance dates are stored that way. "Today" still uses server-local time (backlog).
 
 ## 15. Planned: customer pricing and sales documents
 
@@ -458,7 +458,7 @@ These apply to every change. They do not authorize redesigning a working workflo
 
 **Standard (target).** Growing list APIs use validated pagination, stable sorting and bounded filters. Indexes follow real query patterns. Use `lean()`, narrow `select`, selective populate, parallel independent reads, short transactions, debounced and cancelled search, no N+1 and no duplicate requests. Dashboard and portal summaries use backend aggregation. The aim is useful content within about 1–2 seconds under normal production conditions. This is a target, not a guarantee. Correct stock and accounting behavior always beats speed.
 
-**Current state.** The standard is met for suppliers, material receipts, supplier ledger, washers, washing processes, manufacturing history and payout history. It is **not** met for several endpoints: `GET /api/employees`, `/customers`, `/attendance` and sub-routes, `/payout`, `/payout/:employeeId`, `/payout/register`, `/stock`, `/stock/summary`, `/stock/low-stock`, `/stock/types` and `/stock/:id/history`. `Payout` has no secondary indexes and `Attendance` has only an employee and date index. These are tracked in the backlog.
+**Current state.** The standard is met for suppliers, material receipts, supplier ledger, washers, washing processes, manufacturing history and payout history. `GET /api/employees`, `/customers`, `/attendance`, `/attendance/range`, `/attendance/employee/:id`, `/payout`, `/payout/:employeeId`, `/stock`, `/stock/low-stock` and `/stock/:id/history` keep their legacy array response but are capped (1000 to 10000 rows; 500 stock types) and set the `X-Result-Capped: true` header when truncated; sending `?page` or `?limit` returns `{items, page, limit, total, totalPages}` instead (`/stock/:id/history` adds an additive `pagination` field and keeps `history` an array; `/stock/low-stock` adds `capped`). `/attendance/range` requires strict `YYYY-MM-DD` dates, start not after end, and at most 366 days. `/stock/summary` is one aggregation and `/stock/types` counts products only for the returned types. `POST /payout/preview` and `/payout/bulk-preview` load only the period's attendance, sum advances in the database and read only overlapping payouts; results equal the old full-history calculation. Indexes added: `Attendance {date}`, `Employee {isActive,name}`, `Payout {paidOn,_id}`, `StockItem {stockType,productName}`. Still open: payout create, edit and delete load full history inside their transactions, `/payout/register` and `/stock/history` (500 rows) are unchanged, and none of this has been timed or explained against live MongoDB.
 
 **Startup and logging.** Startup connects to MongoDB first. Payload-free timing logs cover MongoDB connect, startup, login and dashboard. Logs never contain bodies, credentials, tokens or connection data.
 

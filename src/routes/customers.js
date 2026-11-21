@@ -2,6 +2,7 @@
 const express = require('express');
 const router = express.Router();
 const Customer = require('../models/Customer');
+const { sendListResponse } = require('../utils/listQuery');
 
 // Map known Mongoose/Mongo errors to safe client responses; never leak stack traces.
 const handleError = (err, res) => {
@@ -21,9 +22,15 @@ const asyncHandler = (fn) => (req, res, next) =>
   Promise.resolve(fn(req, res, next)).catch((err) => handleError(err, res));
 
 // Get all customers
+// Legacy callers get the full array (capped); ?page/?limit returns a paged envelope.
 router.get('/', asyncHandler(async (req, res) => {
-  const customers = await Customer.find();
-  res.json(customers);
+  await sendListResponse(
+    res,
+    req.query,
+    { cap: 1000 },
+    () => Customer.find().sort({ _id: 1 }),
+    () => Customer.countDocuments()
+  );
 }));
 
 // Add a new customer

@@ -7,6 +7,18 @@ const StockItem = require("../models/StockItem");
 const StockMovement = require("../models/StockMovement");
 const StockType = require("../models/StockType");
 const Supplier = require("../models/Supplier");
+const {
+  applyLegacyCap,
+  parseOptionalPagination,
+  sendListResponse,
+  withStockVirtuals,
+} = require("../utils/listQuery");
+const { buildStockSummaryPipeline } = require("../utils/stockSummary");
+
+// Hard safety caps for list endpoints (legacy mode, no ?page/?limit).
+const STOCK_LIST_CAP = 2000;
+const STOCK_TYPE_LIST_CAP = 500;
+const ITEM_HISTORY_CAP = 1000;
 
 
 /* ==========================================================
@@ -345,15 +357,21 @@ router.get(
             category: 1,
             name: 1,
           })
+          .limit(STOCK_TYPE_LIST_CAP)
           .lean();
 
 
+      // Count products only for the types being returned (same counts, far
+      // fewer items scanned than grouping the whole collection).
       const productCounts =
         await StockItem.aggregate([
           {
             $match: {
               stockType: {
-                $ne: null,
+                $in: types.map(
+                  (type) =>
+                    type._id
+                ),
               },
             },
           },
@@ -940,7 +958,7 @@ router.get(
   "/low-stock",
   async (req, res) => {
     try {
-      const items =
+      const rows =
         await StockItem.find({
           $expr: {
             $lte: [
@@ -957,7 +975,23 @@ router.get(
           .sort({
             currentStock: 1,
             productName: 1,
-          });
+            _id: 1,
+          })
+          .limit(STOCK_LIST_CAP + 1)
+          .lean();
+
+      const {
+        rows: cappedRows,
+        capped: wasCapped,
+      } = applyLegacyCap(
+        rows,
+        STOCK_LIST_CAP
+      );
+
+      const items =
+        cappedRows.map(
+          withStockVirtuals
+        );
 
 
       return res.json({
@@ -965,6 +999,10 @@ router.get(
           items.length,
 
         items,
+
+        ...(wasCapped
+          ? { capped: true }
+          : {}),
       });
     } catch (err) {
       console.error(
@@ -1173,63 +1211,29 @@ router.get(
   "/summary",
   async (req, res) => {
     try {
-      const items =
-        await StockItem.find()
-          .lean();
+      // One aggregation instead of loading every item.
+      const [row] =
+        await StockItem.aggregate(
+          buildStockSummaryPipeline()
+        );
 
 
       const summary = {
         totalItems:
-          items.length,
+          row?.totalItems || 0,
 
-        rawMaterial: 0,
+        rawMaterial:
+          row?.rawMaterial || 0,
 
-        washedRawMaterial: 0,
+        washedRawMaterial:
+          row?.washedRawMaterial || 0,
 
-        finishedGoods: 0,
+        finishedGoods:
+          row?.finishedGoods || 0,
 
-        lowStock: 0,
+        lowStock:
+          row?.lowStock || 0,
       };
-
-
-      items.forEach(
-        (item) => {
-          if (
-            item.category ===
-            "raw_material"
-          ) {
-            summary.rawMaterial +=
-              1;
-          }
-
-
-          if (
-            item.category ===
-            "washed_raw_material"
-          ) {
-            summary.washedRawMaterial +=
-              1;
-          }
-
-
-          if (
-            item.category ===
-            "finished_goods"
-          ) {
-            summary.finishedGoods +=
-              1;
-          }
-
-
-          if (
-            item.currentStock <=
-            item.minimumStock
-          ) {
-            summary.lowStock +=
-              1;
-          }
-        }
-      );
 
 
       return res.json(
@@ -1414,22 +1418,37 @@ router.get(
       }
 
 
-      const items =
-        await StockItem.find(
-          query
-        )
-          .populate(
-            "stockType",
-            "name category notes requiresSupplier requiresSize"
+      // Legacy callers get the full array (capped); ?page/?limit returns a
+      // paged envelope. lean() output gets the schema virtuals re-added so the
+      // JSON is identical to a hydrated document.
+      return await sendListResponse(
+        res,
+        req.query,
+        {
+          cap: STOCK_LIST_CAP,
+        },
+        () =>
+          StockItem.find(
+            query
           )
-          .populate("supplier", "name")
-          .sort({
-            productName: 1,
-          });
-
-
-      return res.json(
-        items
+            .populate(
+              "stockType",
+              "name category notes requiresSupplier requiresSize"
+            )
+            .populate("supplier", "name")
+            .sort({
+              productName: 1,
+              _id: 1,
+            })
+            .lean(),
+        () =>
+          StockItem.countDocuments(
+            query
+          ),
+        (rows) =>
+          rows.map(
+            withStockVirtuals
+          )
       );
     } catch (err) {
       console.error(
@@ -2909,8 +2928,17 @@ router.get(
       }
 
 
-      const history =
-        await StockMovement.find({
+      const paging =
+        parseOptionalPagination(
+          req.query,
+          {
+            cap: ITEM_HISTORY_CAP,
+            maxLimit: 200,
+          }
+        );
+
+      const historyQuery =
+        StockMovement.find({
           item:
             id,
         })
@@ -2918,12 +2946,66 @@ router.get(
             movementDate: -1,
             createdAt: -1,
           })
+          .skip(paging.skip)
+          .limit(paging.limit)
           .lean();
 
+      // history stays an array; pagination info is an additive field.
+      if (paging.paged) {
+        const [
+          history,
+          total,
+        ] = await Promise.all([
+          historyQuery,
+          StockMovement.countDocuments({
+            item:
+              id,
+          }),
+        ]);
+
+        return res.json({
+          item,
+          history,
+          pagination: {
+            page:
+              paging.page,
+            limit:
+              paging.limit,
+            total,
+            totalPages:
+              Math.max(
+                1,
+                Math.ceil(
+                  total /
+                    paging.limit
+                )
+              ),
+            capped: false,
+          },
+        });
+      }
+
+      const {
+        rows: history,
+        capped,
+      } = applyLegacyCap(
+        await historyQuery,
+        ITEM_HISTORY_CAP
+      );
 
       return res.json({
         item,
         history,
+        pagination: {
+          page: 1,
+          limit:
+            ITEM_HISTORY_CAP,
+          total: capped
+            ? null
+            : history.length,
+          totalPages: 1,
+          capped,
+        },
       });
     } catch (err) {
       console.error(

@@ -157,5 +157,7 @@ const payoutSchema = new mongoose.Schema(
 payoutSchema.index({ employee: 1, startDate: 1, endDate: 1 });
 // Supports the dashboard "paid this month" lookup.
 payoutSchema.index({ status: 1, paidOn: -1 });
+// Supports the history/list sort (newest paid first) without an in-memory sort.
+payoutSchema.index({ paidOn: -1, _id: -1 });
 
 module.exports = mongoose.model("Payout", payoutSchema);

@@ -19,17 +19,34 @@ const buildDashboardResponse = ({
   recentEmployees,
 });
 
+// India Standard Time is a fixed +05:30 with no daylight saving.
+const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+
+/** The IST calendar month containing `now`, as { year, month } (month 0-11). */
+const getIstYearMonth = (now = new Date()) => {
+  const shifted = new Date(now.getTime() + IST_OFFSET_MS);
+  return { year: shifted.getUTCFullYear(), month: shifted.getUTCMonth() };
+};
+
 /**
- * Current calendar month as UTC date bounds: [start, end). Independent of the
- * server time zone (same UTC convention as the manufacturing month filter).
+ * Current IST calendar month as instants: [start, end), i.e. IST midnight of the
+ * 1st to IST midnight of the next 1st. Independent of the server time zone.
  */
 const getMonthBounds = (now = new Date()) => {
-  const year = now.getUTCFullYear();
-  const month = now.getUTCMonth();
+  const { year, month } = getIstYearMonth(now);
   return {
-    start: new Date(Date.UTC(year, month, 1)),
-    end: new Date(Date.UTC(year, month + 1, 1)),
+    start: new Date(Date.UTC(year, month, 1) - IST_OFFSET_MS),
+    end: new Date(Date.UTC(year, month + 1, 1) - IST_OFFSET_MS),
   };
+};
+
+/**
+ * First day of the IST month at UTC midnight. Attendance dates are stored at UTC
+ * midnight of the business date, so this is the right lower bound for them.
+ */
+const getAttendanceMonthStart = (now = new Date()) => {
+  const { year, month } = getIstYearMonth(now);
+  return new Date(Date.UTC(year, month, 1));
 };
 
 /** Combines the Payout and BulkPayout aggregate results into one rounded total. */
@@ -40,6 +57,8 @@ const sumMonthSalary = (payoutAgg, bulkAgg) => {
 
 module.exports = {
   buildDashboardResponse,
+  IST_OFFSET_MS,
+  getAttendanceMonthStart,
   getMonthBounds,
   sumMonthSalary,
 };

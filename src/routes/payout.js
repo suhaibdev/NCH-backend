@@ -15,7 +15,13 @@ const {
 } = require('../utils/payoutOverlap');
 const { getHistoryPagination, serializeBulkHistoryItem } = require('../utils/payoutHistory');
 const {
+  loadAdvanceTotals,
+  loadOverlappingPayouts,
+  loadPeriodAttendance,
+} = require('../utils/payrollPreviewData');
+const {
   STANDARD_WORK_HOURS,
+  advanceStatusFromTotals,
   calculateAdvanceStatus,
   calculateNetSalary,
   getWorkingTime,
@@ -24,6 +30,10 @@ const {
 } = require('../utils/payroll');
 const payoutEdit = require('../utils/payoutEdit');
 const { sendServerError } = require('../utils/httpErrors');
+const { sendListResponse } = require('../utils/listQuery');
+
+const PAYOUT_LIST_CAP = 2000;
+const EMPLOYEE_PAYOUT_LIST_CAP = 1000;
 
 // ===============================================
 // HELPER FUNCTIONS
@@ -215,15 +225,21 @@ const generateBulkPayoutNumber = async (session) => {
 // ===============================================
 // GET ALL PAYOUTS
 // ===============================================
+// The legacy records table filters client-side, so the shape stays an array.
+// Newest first, capped; ?page/?limit returns a paged envelope instead.
 router.get('/', async (req, res) => {
   try {
-    const payouts = await Payout.find() // Intentionally not using .lean() here as populate() is used.
-      .populate(
-        'employee',
-        'name workType baseDailySalary'
-      )
-      .sort({ paidOn: -1 });
-    res.json(payouts);
+    await sendListResponse(
+      res,
+      req.query,
+      { cap: PAYOUT_LIST_CAP },
+      () =>
+        Payout.find()
+          .populate('employee', 'name workType baseDailySalary')
+          .sort({ paidOn: -1, _id: -1 })
+          .lean(),
+      () => Payout.countDocuments()
+    );
   } catch (err) {
     sendServerError(res, 'GET PAYOUTS', err);
   }
@@ -272,18 +288,17 @@ router.get('/:employeeId', async (req, res) => {
       return res.status(400).json({ message: 'Invalid Employee ID format.' });
     }
 
-    const payouts = await Payout.find({
-      employee: employeeId,
-    })
-      .populate(
-        'employee',
-        'name workType baseDailySalary'
-      )
-      .sort({
-        paidOn: -1
-      })
-      .lean(); // Using .lean() here is a good optimization as it's a read-only operation.
-    res.json(payouts);
+    await sendListResponse(
+      res,
+      req.query,
+      { cap: EMPLOYEE_PAYOUT_LIST_CAP },
+      () =>
+        Payout.find({ employee: employeeId })
+          .populate('employee', 'name workType baseDailySalary')
+          .sort({ paidOn: -1, _id: -1 })
+          .lean(),
+      () => Payout.countDocuments({ employee: employeeId })
+    );
   } catch (err) {
     sendServerError(res, 'GET EMPLOYEE PAYOUTS', err);
   }
@@ -319,22 +334,24 @@ router.post('/preview', async (req, res) => {
       return res.status(400).json({ message: 'Cannot process payroll for an inactive employee.' });
     }
 
-    // Advance recoveries come from BOTH single payouts and bulk payout lines.
-    const [allAttendance, payoutHistory] = await Promise.all([
-      Attendance.find({ employee: employeeId, date: { $lte: range.end } }).lean(),
-      loadEmployeePayoutHistory(employeeId),
+    // Only the period's attendance is loaded; advance totals (attendance advances
+    // and recoveries from BOTH single payouts and bulk lines) are summed in the
+    // database. Results equal the old full-history calculation.
+    const [periodAttendance, advanceTotals] = await Promise.all([
+      loadPeriodAttendance([employeeId], range.start, range.end),
+      loadAdvanceTotals([employeeId], range.end),
     ]);
-    const previousPayouts = filterPayoutsEndingBy(payoutHistory, range.end);
 
     const hourlyRate = roundCurrency(employee.baseDailySalary / STANDARD_WORK_HOURS);
     const payroll = calculatePayrollMetrics(
-      allAttendance,
+      periodAttendance,
       range.start,
       range.end,
       hourlyRate
     );
 
-    const advanceStatus = calculateAdvanceStatus(allAttendance, previousPayouts);
+    const totals = advanceTotals.get(String(employeeId)) || { taken: 0, recovered: 0 };
+    const advanceStatus = advanceStatusFromTotals(totals.taken, totals.recovered);
 
     res.json({
       employeeId,
@@ -475,46 +492,31 @@ router.post('/bulk-preview', async (req, res) => {
       );
 
     /*
-     * We need historical attendance up to the
-     * payroll end date because advances may have
-     * been taken before this payroll period.
+     * Advances may have been taken before this payroll
+     * period, so lifetime totals up to the end date are
+     * needed. They are summed in the database; only the
+     * period's attendance (already loaded above) and the
+     * payouts overlapping the period are read as records.
      */
     const [
-      historicalAttendance,
-      legacyPayouts,
-      bulkPayouts,
+      advanceTotals,
+      payoutsByEmployee,
     ] = await Promise.all([
-      Attendance.find({
-        employee: {
-          $in: activeEmployeeIds,
-        },
-        date: {
-          $lte: range.end,
-        },
-      }).lean(),
+      loadAdvanceTotals(
+        activeEmployeeIds,
+        range.end
+      ),
 
-      Payout.find({
-        employee: {
-          $in: activeEmployeeIds,
-        },
-      }).lean(),
-
-      BulkPayout.find({
-        'employees.employee': {
-          $in: activeEmployeeIds,
-        },
-      }).lean(),
+      loadOverlappingPayouts(
+        activeEmployeeIds,
+        range.start,
+        range.end
+      ),
     ]);
 
     const attendanceByEmployee =
       groupByEmployee(
-        historicalAttendance
-      );
-
-    const payoutsByEmployee =
-      buildPayoutHistoryByEmployee(
-        legacyPayouts,
-        bulkPayouts
+        attendanceInPeriod
       );
 
     const previewEmployees =
@@ -558,28 +560,19 @@ router.post('/bulk-preview', async (req, res) => {
           );
 
         /*
-         * Only older/equal payroll periods should
-         * affect the employee's advance balance.
+         * Only older/equal payroll periods affect the
+         * employee's advance balance (summed per employee).
          */
-        const previousPayouts =
-          employeePayouts.filter(
-            (payout) => {
-              if (!payout.endDate) {
-                return false;
-              }
-
-              return (
-                new Date(
-                  payout.endDate
-                ) <= range.end
-              );
-            }
-          );
+        const totals =
+          advanceTotals.get(id) || {
+            taken: 0,
+            recovered: 0,
+          };
 
         const advanceStatus =
-          calculateAdvanceStatus(
-            employeeAttendance,
-            previousPayouts
+          advanceStatusFromTotals(
+            totals.taken,
+            totals.recovered
           );
 
         /*

@@ -8,6 +8,7 @@ const Payout = require("../models/Payout");
 const BulkPayout = require("../models/BulkPayout");
 const {
   buildDashboardResponse,
+  getAttendanceMonthStart,
   getMonthBounds,
   sumMonthSalary,
 } = require("../utils/dashboardResponse");
@@ -23,8 +24,9 @@ router.get("/", async (req, res) => {
     const endOfToday = new Date(today);
     endOfToday.setHours(23, 59, 59, 999);
 
-    const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
-    // Salary paid this month: UTC month bounds, independent of server time zone.
+    // Month advance: IST month start at UTC midnight (attendance dates are stored that way).
+    const startOfMonth = getAttendanceMonthStart(today);
+    // Salary paid this month: IST month bounds, independent of server time zone.
     const paidBounds = getMonthBounds(today);
     const paidRange = { $gte: paidBounds.start, $lt: paidBounds.end };
 

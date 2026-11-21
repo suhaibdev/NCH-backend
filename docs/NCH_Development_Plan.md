@@ -33,7 +33,7 @@ Continue building the NCH Factory Management System in controlled, testable phas
 |---|---|---|---|
 | Core | Authentication | Built | Admin role only |
 | Core | Admin Shell (sidebar, mobile bottom nav) | Built | Order: Dashboard, Products, Attendance, Stock, Factory Flow, Payout, Washers, Suppliers, Customers, Employees. No Stock dropdown. |
-| Core | Dashboard | Partial | Month salary uses the UTC month |
+| Core | Dashboard | Partial | Month salary and month advance use the IST month; "today" counts still use server-local time |
 | HR | Employees | Built | |
 | HR | Attendance, Bulk | Built | Default hours from `STANDARD_WORK_HOURS = 8`, max 8, `DD/MM/YY` date input |
 | HR | Attendance, Single | Built | Still hard-codes 8 in several UI places |
@@ -71,7 +71,7 @@ Continue building the NCH Factory Management System in controlled, testable phas
 | Platform | Portals (customer, supplier) | Planned | |
 | Platform | Notifications, WhatsApp | Planned | |
 | Platform | Dashboard analytics | Planned | |
-| Platform | Performance Phase 2 (pagination, indexes) | Planned | Needs live timing evidence first |
+| Platform | Performance Round 1 (caps, optional pagination, indexes, bounded payout previews) | Built | Static checks only; needs live MongoDB timing and `explain()` evidence. Create, edit and delete payout routes and `GET /stock/history` are still unbounded or full-history |
 
 ## 3. Development rules
 
@@ -136,7 +136,10 @@ There is no test runner and no `test` script. The files are plain `assert` scrip
 | `test/payout-single-safety.test.js` | Single payout overlap, advance and negative-net parity |
 | `test/payout-single-session.test.js` | Single payout transaction handling |
 | `test/attendance-lock.test.js` | Attendance lock after payout |
-| `test/dashboard-month.test.js` | Month salary total |
+| `test/dashboard-month.test.js` | IST month bounds (1st-of-month boundary) and month salary total |
+| `test/list-query.test.js` | Optional pagination, caps, attendance range validation |
+| `test/stock-list-shape.test.js` | Lean stock rows keep schema virtuals; summary pipeline |
+| `test/payout-preview-equivalence.test.js` | Bounded payout previews equal the old full-history results |
 | `test/error-responses.test.js` | Generic 500 responses |
 | `test/supplier-accounting.test.js` | Paise parsing, payment rules |
 | `test/washing.test.js` | Washing helpers (paise, size, charge, identity) |
@@ -196,13 +199,13 @@ Run these against a connected database before a release.
 
 | # | Issue | Where |
 |---|---|---|
-| 1 | The dashboard month-salary total uses the UTC month; it should use the IST month. "Today" in the dashboard and payout date parsing use server-local time. | `dashboard.js`; `payout.js` `parseDate` |
+| 1 | The dashboard "today" counts and payout date parsing use server-local time. (Month salary and month advance are IST.) | `dashboard.js`; `payout.js` `parseDate` |
 | 2 | Payout edits keep no audit trail (who, when, before and after). | `payout.js` PATCH routes |
 | 3 | `PayoutPage.jsx` is very large (about 3,650 lines) and mixes creation, history, edit and print. | `pages/Employees/PayoutPage.jsx` |
 | 4 | `ProcessGoodsPage.css` has a global `button` rule, and all washer pages import that file, so it restyles buttons elsewhere. | `pages/Stock/ProcessGoodsPage.css` |
 | 5 | Three files are not prettier-clean. (This figure is from the task brief; the audit counted 32 files before later cleanups; the current set was not re-run.) | frontend `src/` |
-| 6 | Several list endpoints are unbounded (list in `NCH_Architecture_Plan.md` section 19), and some payout previews load all history. | backend routes |
-| 7 | Missing pagination and indexes: `Payout` has no secondary indexes; `Attendance` has only employee+date; `Employee.isActive` is unindexed. | models |
+| 6 | List endpoints now have hard caps and optional `?page/?limit` (section 19 of the Architecture Plan). Payout create, edit and delete still load full history inside their transactions. `GET /api/payout` returns at most the newest 2000 single payouts; the legacy records table filters client-side. | backend routes |
+| 7 | Indexes added in code (build on next deploy, not yet verified live): `Attendance {date}`, `Employee {isActive,name}`, `Payout {paidOn,_id}`, `StockItem {stockType,productName}`. Query plans are unverified. | models |
 | 8 | Customer routes still lack field validation (email format, contact number, GST). Duplicate-email and bad-id errors are mapped, but the fields themselves are not checked. | `routes/customers.js` |
 | 9 | "Products" is only a navigation alias to Stock Management. There is no Product model, price, HSN or GST. | `AdminShell.jsx` |
 | 10 | The Stock History page is missing although the backend endpoints exist. | `/admin/stock/history` |
