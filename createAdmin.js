@@ -5,17 +5,30 @@ const User = require('./src/models/User');
 
 dotenv.config();
 
-const admin = {
-  name: 'Admin',
-  email: 'admin@nch.com',
-  password: 'Admin@123',
-  role: 'admin',
-};
+// Admin credentials come from the environment (see .env.example).
+// They are never hard-coded and the password is never printed.
+const REQUIRED_ENV_VARS = ['MONGODB_URI', 'ADMIN_EMAIL', 'ADMIN_PASSWORD'];
+
+function getAdminFromEnv() {
+  const missing = REQUIRED_ENV_VARS.filter((name) => !String(process.env[name] || '').trim());
+  if (missing.length > 0) {
+    throw new Error(
+      `Missing required environment variable(s): ${missing.join(', ')}. ` +
+        'Set them in .env (see .env.example) and run the script again.'
+    );
+  }
+
+  return {
+    name: 'Admin',
+    // Match the User model and the login route, which store and look up emails trimmed and lowercased.
+    email: process.env.ADMIN_EMAIL.trim().toLowerCase(),
+    password: process.env.ADMIN_PASSWORD,
+    role: 'admin',
+  };
+}
 
 async function createAdmin() {
-  if (!process.env.MONGODB_URI) {
-    throw new Error('MONGODB_URI is not configured.');
-  }
+  const admin = getAdminFromEnv();
 
   await mongoose.connect(process.env.MONGODB_URI);
 
@@ -29,7 +42,7 @@ async function createAdmin() {
   const password = await bcrypt.hash(admin.password, 12);
   await User.create({ ...admin, password });
   console.log(`✅ Admin user created for ${admin.email}.`);
-  console.log('IMPORTANT: Change the default password after the first login.');
+  console.log('IMPORTANT: Remove ADMIN_PASSWORD from .env now that the admin account exists.');
 }
 
 createAdmin()
