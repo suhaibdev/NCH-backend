@@ -78,7 +78,8 @@ Admin  →  React frontend  →  Axios / REST  →  Express backend  →  Mongoo
 | Products | Partial (a navigation alias to Stock Management; no Product model) |
 | Estimates (create, edit, cancel, payments, print) | Built (11B) |
 | GST Invoices (create, edit before payment, reverse, payments, print) | Built (11C) |
-| Challans, Estimate to Invoice conversion, GST report | Planned |
+| Estimate to Invoice conversion (convert, carry-over of payments, links) | Built (11D) |
+| Challans, GST report | Planned |
 | Labels page and label printing | Planned (Label exists only as a Manufacturing input rule) |
 | Portals, Orders, Notifications | Planned |
 
@@ -108,7 +109,7 @@ src/
 
 `pages/Products.jsx` is a public marketing section on the home page; it is not the admin Products item. `WasherDetailFixed.jsx` is the live route for washer master data and rates; the name is legacy. `Stock/StockHistoryPage` serves `/admin/stock/history`. There is no `LabelsPage` or `WashingPage`.
 
-Backend: `index.js`; `src/config/sellerProfile.js` (public NCH seller details); `src/routes/` (16 route files), `src/models/` (30 models), `src/middleware/` (auth, role, database readiness), `src/utils/` (helpers listed per feature below), `test/` (plain Node assert scripts, see Development Plan section 6).
+Backend: `index.js`; `src/config/sellerProfile.js` (public NCH seller details); `src/routes/` (17 route files), `src/models/` (30 models), `src/middleware/` (auth, role, database readiness), `src/utils/` (helpers listed per feature below), `test/` (plain Node assert scripts, see Development Plan section 6).
 
 ## 5. Routes and navigation
 
@@ -124,7 +125,7 @@ Backend: `index.js`; `src/config/sellerProfile.js` (public NCH seller details); 
 /admin/customers/:customerId                    details, Estimate Account, Products and Prices
 /admin/estimates                                list (filters sync to the URL, e.g. ?customer=)
 /admin/estimates/new                            create (?customer= preselects)
-/admin/estimates/:estimateId                    detail, payments, cancel, print
+/admin/estimates/:estimateId                    detail, payments, cancel, convert to invoice, print
 /admin/estimates/:estimateId/edit               edit lines and notes
 /admin/invoices                                 GST invoice list (filters sync to the URL)
 /admin/invoices/new                             create (?customer= preselects)
@@ -458,7 +459,7 @@ Hard and permanent. `DELETE /api/payout/:id` and `DELETE /api/payout/bulk/:id` e
 - **Voiding** is final and in place: `voided`, `voidedAt`, `voidedBy` and `voidReason` are set, and the amount, date and method never change. Nothing is deleted. To correct an amount, void the payment and record a new one.
 - The **balance is derived** (total minus non-voided payments) and is never stored or edited.
 - The estimate ledger is **separate** from the future invoice ledger. Totals and balances are never mixed.
-- Conversion to an Invoice is **not built** (Step 11D). The model reserves status `converted`, `convertedInvoice` and `convertedAt`, so conversion can link an invoice without a second stock deduction.
+- Conversion to an Invoice is built in Step 11D (see "Built in Step 11D" below). An estimate becomes `converted`, read-only and linked to the invoice, without a second stock deduction.
 
 **Models:**
 - `Estimate`:
@@ -523,7 +524,7 @@ Hard and permanent. `DELETE /api/payout/:id` and `DELETE /api/payout/bulk/:id` e
   - It is blocked while valid payments exist; void them first. The number stays on record as reversed.
 - **Payments:** the same rules as estimate payments (partial allowed, never above the outstanding balance, date not in the future and not before the invoice date, void in place). They are stored in `InvoicePayment`, a ledger **separate** from estimates.
 - The balance is derived (total − valid payments). The customer's invoice outstanding grows by each invoice total.
-- **Step 11D readiness:** `sourceEstimate` and `sourceEstimateNumber` are reserved on the invoice, and a unique partial index on `sourceEstimate` guarantees one estimate becomes at most one invoice.
+- **Estimate link (used by 11D):** `sourceEstimate` and `sourceEstimateNumber` on the invoice, with a unique partial index on `sourceEstimate` so one estimate becomes at most one invoice.
 
 **Tax algorithm** (`src/utils/gstInvoice.js` only; the frontend `utils/invoiceTax.js` is a preview mirror):
 
@@ -595,7 +596,59 @@ The estimate routes and helpers were refactored onto these modules with no behav
 - The print uses `#invoice-print-root` with `body.inv-printing`. It contains: TAX INVOICE, seller, Bill To / Ship To with GSTIN or "Unregistered", lines with HSN and rate, the per-rate summary with HSN codes, totals with round-off, amount in words, the bank block when configured, the declaration and the signatory. A reversed invoice prints a REVERSED banner.
 - The customer detail page has an Invoice Account section.
 
-### Planned (Steps 11D and later)
+### Built in Step 11D: Estimate to Invoice conversion
+
+**Final rules (approved):**
+- **No second stock deduction.** The estimate already deducted the stock; conversion only moves ownership of those units to the invoice. The conversion transaction contains **no StockItem update and no StockMovement**. The audit link is the two-way reference (estimate `convertedInvoice` / `convertedInvoiceNumber`, invoice `sourceEstimate` / `sourceEstimateNumber`), plus the transferred payments.
+- The invoice follows every 11C rule: its own `INV/<FY>/NNNN` number (financial year of the invoice date), seller profile must be configured, tax type from the customer's state, GST once per rate group, grand-total round-off, HSN and GST rate required on every line.
+- **Prices and lines:** the estimate's saved price, quantity, product name and unit are copied exactly. Estimate prices are treated as GST-exclusive taxable prices, so **GST is added on top**: the invoice total is higher than the estimate total. The HSN code and GST rate are the item's **current** values (estimates never stored them); a missing one blocks the conversion with a message naming the item.
+- **Customer details** come from the current customer record (it must be active and have a valid state).
+- **What the admin can change:** only the invoice date (default today; not in the future; not before the estimate date), per-line batch references and invoice notes. Quantities and prices cannot be sent. Later changes go through the normal invoice edit (allowed only while the invoice has no valid payment) or, before converting, through an estimate edit.
+- **Payments are carried over, not voided.**
+  - Each valid estimate payment is copied into `InvoicePayment` with the same amount, date, method, reference and notes, marked `carriedFromEstimatePayment` and `carriedFromEstimateNumber`.
+  - The estimate payment is kept and marked `transferred` (`transferredAt`, `transferredToInvoice`, `transferredInvoiceNumber`, `transferredInvoicePayment`). It is never voided, so the history shows money that was really received.
+  - If the amount already paid is more than the invoice total (possible at 0% GST when the total rounds down), conversion is blocked with 409.
+  - Carried payments are valid invoice payments, so they lock the new invoice against editing; reversing it requires voiding them.
+- **Ledgers stay separate and nothing is counted twice.**
+  - A converted estimate has left the estimate ledger: its summary shows paid 0, outstanding 0 and `transferredPaise`.
+  - The customer estimate account counts active estimates only and excludes transferred payments (`convertedCount` is added).
+  - The money appears once, in the customer invoice account.
+- **A converted estimate is read-only** (status `converted`): edit, cancel, payment and void all return 409 because they require an active estimate. Its list row shows a Converted badge with outstanding "-", the detail page links to the invoice, and the print shows "CONVERTED TO INVOICE INV/…".
+- **Reversing the converted invoice** uses the normal invoice reversal: stock is returned once with `invoice_return`. The estimate **stays `converted`** (it never reopens), and it cannot be cancelled to return the stock again. To bill again, create a new estimate or invoice.
+
+**Model additions** (all optional or defaulted, so no migration is needed):
+- `Estimate`: `convertedInvoiceNumber`, `convertedBy` (`convertedInvoice` and `convertedAt` already existed).
+- `EstimatePayment`: `transferred`, `transferredAt`, `transferredToInvoice`, `transferredInvoiceNumber`, `transferredInvoicePayment`.
+- `InvoicePayment`: `carriedFromEstimatePayment`, `carriedFromEstimateNumber`, with a unique partial index on `carriedFromEstimatePayment` so a payment can be carried over only once.
+
+**Endpoints** (`routes/estimateConversion.js`, mounted at `/api/estimates`, admin only):
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/:id/conversion-preview` | Read-only, no session. `{ eligible, problems[], taxType, customer, lines[], tax, carriedPaymentsPaise, carriedPaymentCount, estimateTotalPaise, sellerConfigured, estimateNumber, estimateDate }`, using the real invoice math |
+| POST | `/:id/convert` | `{ invoiceDate?, notes?, lines?: [{item, batchReference}] }` → 201 with the invoice detail shape |
+
+Existing responses only gained fields: estimate `summary.transferredPaise` and `transferredCount`, invoice list rows `sourceEstimateNumber`, customer estimate account `convertedCount`.
+
+**Convert transaction** (validation, seller check and request parsing run before the session opens):
+1. Claim the estimate: bump `revision` on an **active** estimate. If it is not active: 404, or 409 (already converted / cancelled).
+2. The invoice date must not be before the estimate date; batch references must belong to the estimate's products.
+3. Read the customer and each item, build the lines from the snapshots, compute the tax and total the carried payments. Any problem returns 400 naming the item or customer; paid above the total returns 409.
+4. Take the next `INV` number for the invoice date's financial year.
+5. Create the invoice with the customer and seller snapshots, `sourceEstimate` and `sourceEstimateNumber`.
+6. Create the carried invoice payments, then mark the estimate payments `transferred` in one bulk write (a count mismatch returns 409).
+7. Set the estimate to `converted` and return the invoice detail.
+
+**Concurrency:** two conversions of the same estimate, or a conversion racing an estimate edit, cancel, payment or void, all contend on the estimate's `revision`. The loser is retried by the driver, sees the new status and returns 409. Two unique partial indexes (`Invoice.sourceEstimate`, `InvoicePayment.carriedFromEstimatePayment`) are the final guard. There are no stock writes, so there is no stock race.
+
+**Frontend:** the active estimate detail page has a **Convert to Invoice** action that opens a confirmation panel:
+- It states that GST is added on top of the saved estimate prices and shows the resulting total, the tax type, the lines with HSN and rate, and the per-rate tax breakdown.
+- It lists any problems (which disable confirmation) and the payments that will move.
+- It lets the admin change the invoice date, batch references and notes.
+
+A converted estimate shows a banner linking to the invoice, "Moved to Invoice" in the summary, and payments marked "Transferred to INV/…". The invoice shows "from EST/…" in its list, header and details, and carried payments show "Carried from EST/…". The estimate list has a Converted status filter.
+
+### Planned (Steps 11E and later)
 
 **Document rules (approved):**
 
@@ -603,7 +656,7 @@ The estimate routes and helpers were refactored onto these modules with no behav
 |---|---|---|---|
 | Estimate (Built, 11B) | Deducts stock on creation; edit adjusts by difference; cancel returns it | No HSN or GST | Separate Estimate ledger, payments and balance |
 | Invoice (Built, 11C) | Deducts stock on creation; edit (before payment) adjusts by difference; reversal returns it | HSN, GST rate, customer GSTIN, CGST/SGST or IGST | Customer Invoice ledger, payments and balance |
-| Estimate converted to Invoice | No second deduction | Invoice tax fields apply | Reference or transfer must be auditable |
+| Estimate converted to Invoice (Built, 11D) | No second deduction | Invoice tax fields apply | Payments carried over; the estimate and invoice links are auditable |
 | Challan | Manual; no stock effect | No GST or GSTIN | No sales or payment balance effect |
 
 One invoice may have partial or multiple challans; challan quantities cannot exceed the document quantity. The monthly GST report is built from GST invoices only. A legacy `POST /api/customers/:id/order` stub exists (no frontend caller, no Order model).
@@ -684,3 +737,5 @@ These apply to every change. They do not authorize redesigning a working workflo
 11. **Print roots need scoped, more specific selectors.** All page CSS ships in one bundle, so a page's `@media print` rules apply everywhere. `PayoutPage.css` hides every `<body>` child except `#payout-print-root` when printing. New print views use a body class while printing (`body.est-printing`, `body.inv-printing`) and selectors such as `html body.est-printing > #estimate-print-root`.
 12. **Tax math lives in one place.** Invoice GST is computed only in `src/utils/gstInvoice.js` and stored on the invoice. The frontend `utils/invoiceTax.js` mirrors it for a labelled preview only, and the saved invoice is always authoritative.
 13. **Seller secrets stay out of source.** Public seller details live in `src/config/sellerProfile.js`. Bank details come from environment variables; only their names are listed in `.env.example`.
+14. **Conversion moves ownership of already-deducted stock and never touches stock.** A conversion transaction contains no StockItem update and no StockMovement, so stock can be neither deducted twice nor returned twice. Money moves by carry-over (copy plus a `transferred` mark), never by voiding real payments.
+15. **Claim a document with its revision before changing its status.** Conversion, like edit, cancel, payment and void, first bumps `revision` on an active document; once it is no longer active, every later attempt is a 409. Back this with a unique partial index on the link field.

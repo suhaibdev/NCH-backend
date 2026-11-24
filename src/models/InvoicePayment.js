@@ -34,11 +34,20 @@ const invoicePaymentSchema = new mongoose.Schema(
     voidedAt: { type: Date, default: null },
     voidedBy: { type: String, default: "" },
     voidReason: { type: String, default: "", trim: true, maxlength: 250 },
+
+    // Set when this payment was carried over from an estimate payment (Step 11D).
+    carriedFromEstimatePayment: { type: mongoose.Schema.Types.ObjectId, default: null },
+    carriedFromEstimateNumber: { type: String, default: "" },
   },
   { timestamps: true }
 );
 
 invoicePaymentSchema.index({ invoice: 1, paymentDate: -1, createdAt: -1 });
 invoicePaymentSchema.index({ customer: 1, voided: 1 });
+// An estimate payment can be carried over at most once.
+invoicePaymentSchema.index(
+  { carriedFromEstimatePayment: 1 },
+  { unique: true, partialFilterExpression: { carriedFromEstimatePayment: { $type: "objectId" } } }
+);
 
 module.exports = mongoose.model("InvoicePayment", invoicePaymentSchema);

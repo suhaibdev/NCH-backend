@@ -31,6 +31,7 @@ const {
   runTransaction,
   sendTransactionError: sendDocumentTransactionError,
 } = require("../utils/salesTransactions");
+const { buildEstimateSummary } = require("../utils/estimateConversion");
 const {
   ESTIMATE_STATUSES,
   buildSummary,
@@ -72,7 +73,7 @@ const loadDetail = async (estimateId, session = null) => {
     .sort({ paymentDate: -1, createdAt: -1, _id: -1 })
     .session(session)
     .lean();
-  return { estimate, payments, summary: buildSummary(estimate.totalPaise, payments) };
+  return { estimate, payments, summary: buildEstimateSummary(estimate, payments) };
 };
 
 /**
@@ -187,7 +188,13 @@ router.get("/", async (req, res) => {
 
     const paidRows = rows.length
       ? await EstimatePayment.aggregate([
-          { $match: { estimate: { $in: rows.map((row) => row._id) }, voided: false } },
+          {
+            $match: {
+              estimate: { $in: rows.map((row) => row._id) },
+              voided: false,
+              transferred: { $ne: true },
+            },
+          },
           { $group: { _id: "$estimate", paidPaise: { $sum: "$amountPaise" } } },
         ])
       : [];
@@ -203,7 +210,8 @@ router.get("/", async (req, res) => {
         customerName: row.customerSnapshot?.billingName || row.customerSnapshot?.name || "",
         totalPaise: row.totalPaise,
         paidPaise,
-        outstandingPaise: row.totalPaise - paidPaise,
+        // A converted estimate has left the estimate ledger (Step 11D).
+        outstandingPaise: row.status === "converted" ? 0 : row.totalPaise - paidPaise,
         status: row.status,
         lineCount: Array.isArray(row.lines) ? row.lines.length : 0,
       };

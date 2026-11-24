@@ -304,6 +304,7 @@ module.exports = {
   buildSummary,
   canRecordPayment,
   canVoidPayment,
+  cleanBatchReference,
   cleanNotes,
   computeStockDiff,
   formatDocumentNumber,

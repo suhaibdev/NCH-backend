@@ -97,7 +97,9 @@ const estimateSchema = new mongoose.Schema(
 
     // Reserved for Step 11D: link to the invoice without a second stock deduction.
     convertedInvoice: { type: mongoose.Schema.Types.ObjectId, default: null },
+    convertedInvoiceNumber: { type: String, default: "" },
     convertedAt: { type: Date, default: null },
+    convertedBy: { type: String, default: "" },
   },
   { timestamps: true }
 );

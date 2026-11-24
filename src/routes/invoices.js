@@ -40,7 +40,6 @@ const {
   buildSummary,
   canRecordPayment,
   computeStockDiff,
-  formatDocumentNumber,
   getFinancialYear,
   isValidId,
   lineTotal,
@@ -52,7 +51,12 @@ const {
   validateReason,
 } = require("../utils/salesDocuments");
 const {
-  amountInWords,
+  CUSTOMER_FIELDS,
+  buildCustomerSnapshot,
+  formatInvoiceNumber,
+  taxFields,
+} = require("../utils/invoiceSnapshots");
+const {
   computeInvoiceTax,
   determineTaxType,
   missingTaxMetadataMessage,
@@ -63,12 +67,6 @@ const router = express.Router();
 const INVOICE_STATUSES = ["active", "reversed"];
 const INVOICE_MOVEMENTS = { out: "invoice_out", in: "invoice_return" };
 const ITEM_FIELDS = "productName unit category currentStock hsnCode gstRatePercent";
-const CUSTOMER_FIELDS =
-  "name billingName gst stateCode contactNumber billingAddress shippingSameAsBilling shippingAddress isActive";
-
-const formatInvoiceNumber = (financialYear, sequence) =>
-  formatDocumentNumber("INV", financialYear, sequence);
-
 const sendTransactionError = (res, err, route, message) =>
   sendDocumentTransactionError(
     res,
@@ -137,25 +135,6 @@ const invoiceMovement = ({ invoice, ...rest }) =>
     referenceId: invoice._id,
     movementTypes: INVOICE_MOVEMENTS,
   });
-
-const taxFields = (tax) => ({
-  taxSummary: tax.taxSummary,
-  taxablePaise: tax.taxablePaise,
-  cgstPaise: tax.cgstPaise,
-  sgstPaise: tax.sgstPaise,
-  igstPaise: tax.igstPaise,
-  taxTotalPaise: tax.taxTotalPaise,
-  roundOffPaise: tax.roundOffPaise,
-  totalPaise: tax.totalPaise,
-  totalInWords: amountInWords(tax.totalPaise),
-});
-
-const addressSnapshot = (value = {}) => ({
-  line1: value?.line1 || "",
-  line2: value?.line2 || "",
-  city: value?.city || "",
-  pincode: value?.pincode || "",
-});
 
 /* ==========================================================
    FORM SUPPORT
@@ -230,7 +209,9 @@ router.get("/", async (req, res) => {
 
     const [rows, total] = await Promise.all([
       Invoice.find(filter)
-        .select("invoiceNumber invoiceDate customer customerSnapshot taxType totalPaise status lines._id")
+        .select(
+          "invoiceNumber invoiceDate customer customerSnapshot taxType totalPaise status lines._id sourceEstimateNumber"
+        )
         .sort({ invoiceDate: -1, _id: -1 })
         .skip(paging.skip)
         .limit(paging.limit)
@@ -255,6 +236,7 @@ router.get("/", async (req, res) => {
         customer: row.customer,
         customerName: row.customerSnapshot?.billingName || row.customerSnapshot?.name || "",
         taxType: row.taxType,
+        sourceEstimateNumber: row.sourceEstimateNumber || "",
         totalPaise: row.totalPaise,
         paidPaise,
         outstandingPaise: row.totalPaise - paidPaise,
@@ -371,22 +353,7 @@ router.post("/", async (req, res) => {
             financialYear,
             sequence: counter.sequence,
             customer: customer._id,
-            customerSnapshot: {
-              name: customer.name,
-              billingName: customer.billingName || "",
-              gstin: customer.gst || "",
-              stateCode: customer.stateCode,
-              contactNumber:
-                customer.contactNumber === undefined || customer.contactNumber === null
-                  ? ""
-                  : String(customer.contactNumber),
-              billingAddress: addressSnapshot(customer.billingAddress),
-              shippingSameAsBilling: customer.shippingSameAsBilling !== false,
-              shippingAddress: {
-                ...addressSnapshot(customer.shippingAddress),
-                stateCode: customer.shippingAddress?.stateCode || "",
-              },
-            },
+            customerSnapshot: buildCustomerSnapshot(customer),
             seller,
             invoiceDate: payload.date,
             taxType,

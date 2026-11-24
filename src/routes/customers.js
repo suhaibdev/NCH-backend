@@ -7,6 +7,7 @@ const CustomerProductPrice = require('../models/CustomerProductPrice');
 const StockItem = require('../models/StockItem');
 const Estimate = require('../models/Estimate');
 const EstimatePayment = require('../models/EstimatePayment');
+const { buildEstimateAccount } = require('../utils/estimateConversion');
 const Invoice = require('../models/Invoice');
 const InvoicePayment = require('../models/InvoicePayment');
 const {
@@ -204,24 +205,14 @@ router.get('/:id/estimate-account', asyncHandler(async (req, res) => {
       { $group: { _id: '$status', count: { $sum: 1 }, totalPaise: { $sum: '$totalPaise' } } },
     ]),
     // Cancelled estimates never hold valid payments (cancel requires voiding first).
+    // Payments carried to an invoice on conversion belong to the invoice ledger.
     EstimatePayment.aggregate([
-      { $match: { customer: customerId, voided: false } },
+      { $match: { customer: customerId, voided: false, transferred: { $ne: true } } },
       { $group: { _id: null, paidPaise: { $sum: '$amountPaise' }, count: { $sum: 1 } } },
     ]),
   ]);
 
-  const byStatus = new Map(estimateRows.map((row) => [row._id, row]));
-  const totalEstimatedPaise = Number(byStatus.get('active')?.totalPaise || 0);
-  const totalPaidPaise = Number(paymentRows[0]?.paidPaise || 0);
-
-  return res.json({
-    activeCount: Number(byStatus.get('active')?.count || 0),
-    cancelledCount: Number(byStatus.get('cancelled')?.count || 0),
-    totalEstimatedPaise,
-    totalPaidPaise,
-    outstandingPaise: totalEstimatedPaise - totalPaidPaise,
-    paymentCount: Number(paymentRows[0]?.count || 0),
-  });
+  return res.json(buildEstimateAccount(estimateRows, paymentRows));
 }));
 
 /* ==========================================================

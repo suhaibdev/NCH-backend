@@ -34,6 +34,14 @@ const estimatePaymentSchema = new mongoose.Schema(
     voidedAt: { type: Date, default: null },
     voidedBy: { type: String, default: "" },
     voidReason: { type: String, default: "", trim: true, maxlength: 250 },
+
+    // Set when the estimate is converted to an invoice (Step 11D): the payment
+    // is carried over to an InvoicePayment. Both records stay permanent.
+    transferred: { type: Boolean, default: false },
+    transferredAt: { type: Date, default: null },
+    transferredToInvoice: { type: mongoose.Schema.Types.ObjectId, default: null },
+    transferredInvoiceNumber: { type: String, default: "" },
+    transferredInvoicePayment: { type: mongoose.Schema.Types.ObjectId, default: null },
   },
   { timestamps: true }
 );
