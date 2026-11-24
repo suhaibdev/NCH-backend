@@ -29,6 +29,7 @@ const estimateRoutes = require("./src/routes/estimates");
 const estimateConversionRoutes = require("./src/routes/estimateConversion");
 const invoiceRoutes = require("./src/routes/invoices");
 const challanRoutes = require("./src/routes/challans");
+const gstReportRoutes = require("./src/routes/gstReport");
 const supplierRoutes = require("./src/routes/suppliers");
 const materialReceiptRoutes = require("./src/routes/materialReceipts");
 const supplierPaymentRoutes = require("./src/routes/supplierPayments");
@@ -67,6 +68,7 @@ app.use("/api/estimates", verifyToken, authorizeRoles("admin"), estimateConversi
 app.use("/api/estimates", verifyToken, authorizeRoles("admin"), estimateRoutes);
 app.use("/api/invoices", verifyToken, authorizeRoles("admin"), invoiceRoutes);
 app.use("/api/challans", verifyToken, authorizeRoles("admin"), challanRoutes);
+app.use("/api/reports/gst", verifyToken, authorizeRoles("admin"), gstReportRoutes);
 app.use("/api/suppliers", verifyToken, authorizeRoles("admin"), supplierRoutes);
 app.use("/api/material-receipts", verifyToken, authorizeRoles("admin"), materialReceiptRoutes);
 app.use("/api/supplier-payments", verifyToken, authorizeRoles("admin"), supplierPaymentRoutes);

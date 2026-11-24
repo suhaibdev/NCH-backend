@@ -18,7 +18,7 @@ Status tags used in this file: **Built** (working route and UI exist), **Partial
 12. Attendance
 13. Payroll and Payout
 14. Dashboard
-15. Customer pricing, Estimates and Invoices (Built); other sales documents (Planned)
+15. Customer pricing, sales documents and the GST report (Built)
 16. Planned: Labels
 17. Planned: portals, orders, notifications and analytics
 18. UI/UX standards
@@ -80,7 +80,7 @@ Admin  →  React frontend  →  Axios / REST  →  Express backend  →  Mongoo
 | GST Invoices (create, edit before payment, reverse, payments, print) | Built (11C) |
 | Estimate to Invoice conversion (convert, carry-over of payments, links) | Built (11D) |
 | Delivery Challans (against an invoice, partial dispatch, cancel, print) | Built (11E) |
-| GST report | Planned |
+| Monthly GST report (summary, rate, B2B/B2C, HSN, register, CSV) | Built (11F) |
 | Labels page and label printing | Planned (Label exists only as a Manufacturing input rule) |
 | Portals, Orders, Notifications | Planned |
 
@@ -93,13 +93,14 @@ src/
 ├── App.jsx  index.jsx
 ├── components/   AdminLayout  AdminShell(.css)  Navbar(.css)  ProtectedRoute
 ├── config/       api.js  auth.js  axios.js
-├── utils/        businessDate.js  estimates.js  gst.js  invoiceTax.js  text.js  washerPayoutCycle.js
+├── utils/        businessDate.js  challans.js  estimates.js  gst.js  gstReport.js  invoiceTax.js  text.js  washerPayoutCycle.js
 └── pages/
     ├── AdminCommon.css  AdminPortalPage  FactoryFlowPage  HomePage  Hero  Login  Products
     ├── Customer/    CustomersPage  CustomerDetailPage
     ├── Estimates/   EstimatesPage  EstimateFormPage  EstimateDetailPage  EstimatePrint
     ├── Invoices/    InvoicesPage  InvoiceFormPage  InvoiceDetailPage  InvoicePrint  InvoiceTaxBreakdown
     ├── Challans/    ChallansPage  ChallanFormPage  ChallanDetailPage  ChallanPrint
+    ├── Reports/     GstReportPage
     ├── Sales/       DocumentPayments (shared by Estimate and Invoice detail pages)
     ├── Employees/   EmployeesPage  Attendance  PayoutPage  SalarySlip
     ├── Suppliers/   SuppliersPage  SupplierDetailPage  ReceiveMaterialPage
@@ -111,7 +112,7 @@ src/
 
 `pages/Products.jsx` is a public marketing section on the home page; it is not the admin Products item. `WasherDetailFixed.jsx` is the live route for washer master data and rates; the name is legacy. `Stock/StockHistoryPage` serves `/admin/stock/history`. There is no `LabelsPage` or `WashingPage`.
 
-Backend: `index.js`; `src/config/sellerProfile.js` (public NCH seller details); `src/routes/` (18 route files), `src/models/` (32 models), `src/middleware/` (auth, role, database readiness), `src/utils/` (helpers listed per feature below), `test/` (plain Node assert scripts, see Development Plan section 6).
+Backend: `index.js`; `src/config/sellerProfile.js` (public NCH seller details); `src/routes/` (19 route files), `src/models/` (32 models), `src/middleware/` (auth, role, database readiness), `src/utils/` (helpers listed per feature below), `test/` (plain Node assert scripts, see Development Plan section 6).
 
 ## 5. Routes and navigation
 
@@ -136,6 +137,7 @@ Backend: `index.js`; `src/config/sellerProfile.js` (public NCH seller details); 
 /admin/challans                                 delivery challan list (filters sync to the URL, e.g. ?invoice=)
 /admin/challans/new                             create against an invoice (?invoice= required)
 /admin/challans/:challanId                      detail, edit transport, cancel, print
+/admin/reports/gst                               monthly GST report (period in the URL: mode, month, fy, from, to)
 /admin/stock/history                            stock movement history
 /admin/suppliers
 /admin/suppliers/:supplierId
@@ -161,16 +163,15 @@ Legacy redirects: `/employees`, `/customers`, `/employees/attendance`, `/employe
 
 ```text
 /admin/labels            label generation and printing
-/admin/reports/gst
 ```
 
 ### Admin Shell navigation (Built)
 
 All admin routes render through one responsive `AdminShell`. The public `Navbar` is used only on the public home page.
 
-- **Desktop:** a fixed, collapsible dark-navy sidebar. Order: **Dashboard, Products, Attendance, Stock, Factory Flow, Payout, Washers, Suppliers, Customers, Estimates, Invoices, Challans, Employees.** Logout is a separate button at the bottom. There is no Stock dropdown. Products opens `/admin/stock/manage`.
+- **Desktop:** a fixed, collapsible dark-navy sidebar. Order: **Dashboard, Products, Attendance, Stock, Factory Flow, Payout, Washers, Suppliers, Customers, Estimates, Invoices, Challans, GST Report, Employees.** Logout is a separate button at the bottom. There is no Stock dropdown. Products opens `/admin/stock/manage`.
 - **Brand:** `NCH` with `NEW CALCUTTA HANDLOOM` beneath it. The Admin identity shows at the right. There is no notification bell and no profile menu.
-- **Mobile:** a compact brand header plus a fixed bottom bar: **Home, Attendance, Stock, More.** The More sheet holds Products, Factory Flow, Payout, Washers, Suppliers, Customers, Estimates, Invoices, Challans, Employees and Logout.
+- **Mobile:** a compact brand header plus a fixed bottom bar: **Home, Attendance, Stock, More.** The More sheet holds Products, Factory Flow, Payout, Washers, Suppliers, Customers, Estimates, Invoices, Challans, GST Report, Employees and Logout.
 - **Collapsed rail:** centered `NCH` row, then the centered chevron toggle below it.
 - The shell makes no startup data requests. Responsive padding and bottom-bar clearance come from the shell.
 
@@ -400,7 +401,7 @@ Hard and permanent. `DELETE /api/payout/:id` and `DELETE /api/payout/bulk/:id` e
 
 **Partial.** `GET /api/dashboard` returns employee counts, today's attendance, recent employees and salary and advance totals for the month. It uses parallel reads and `lean()`; unused all-history advance data is not computed. The month salary card sums `Payout` and `BulkPayout` over the IST calendar month (fixed +05:30, bounds are IST midnight instants); month advance uses the IST month start at UTC midnight because attendance dates are stored that way. "Today" still uses server-local time (backlog).
 
-## 15. Customer pricing, Estimates and Invoices (Built); other sales documents (Planned)
+## 15. Customer pricing, sales documents and the GST report (Built)
 
 ### Final design decisions (approved, Step 11A)
 
@@ -712,7 +713,71 @@ Existing invoice responses only gained fields (the stored dispatch counters, and
 - **Invoice list:** it has a Dispatch column.
 - **Print:** it uses the same portal pattern as the invoice print (`body.ch-printing`), from the saved snapshot only: seller, challan number and date, invoice reference, deliver-to, optional transport, product / unit / quantity with the total, the receipt line and the signature blocks.
 
-### Planned (Steps 11F and later)
+### Built in Step 11F: Monthly GST Report
+
+**Final rules (approved):**
+- Built from **GST invoices only**. Estimates and challans never appear; the report route imports the Invoice model and nothing else.
+- Source is the **saved invoice snapshot** only: customer name, GSTIN and state, line HSN, rate, unit, quantity and taxable value, the per-rate `taxSummary`, and the invoice totals. Nothing is recomputed from current product or customer data.
+- Period by **invoice date** in the Asia/Kolkata calendar:
+  - a month (`month=YYYY-MM`, the default is the current month)
+  - a financial year (`fy=2026-27`, 1 Apr to 31 Mar)
+  - a custom range (`from`/`to`, inclusive, **at most 366 days**)
+  - Periods cannot start, or a range end, in the future. Invoice dates are stored as UTC midnight of the business date, so the period is a plain UTC range with an exclusive end.
+- **Reversed invoices are excluded from every total**: totals, rate table, B2B/B2C, HSN and the register CSV. They are listed separately with their reversal date.
+  - Each one carries a **"reversed after period"** flag when it was reversed after the period ended.
+  - Caution: the report reads each invoice's current status, so re-running an already-filed month after such a reversal gives lower numbers than were filed. Under GST that correction is normally a credit note in the later month, and credit notes are not built.
+- **Reconciliation:** inside the summary aggregation every invoice is checked for taxable + CGST + SGST + IGST + round-off = total. The response reports `mismatchedInvoices` and whether the totals reconcile, and the UI shows a badge or a warning.
+- **HSN tax is apportioned.** Tax per HSN is not stored, because GST is computed once per rate group. Within each rate, that rate's exact CGST/SGST/IGST is split across its HSN rows by taxable value (largest remainder, BigInt), so HSN taxes sum exactly to the rate totals. The table and CSV are labelled "apportioned". HSN, unit, quantity and taxable value are exact.
+- A line without an HSN code should be impossible (the schema requires one). If found, it is grouped as "(missing)", never dropped, and the affected invoice numbers are listed in `warnings`.
+
+**Endpoints** (`/api/reports/gst`, admin only; every one takes the period query and returns `period {mode, from, to, label}`; an invalid period is 400):
+
+| Method | Path | Returns |
+|---|---|---|
+| GET | `/summary` | `totals` (count, taxable, CGST, SGST, IGST, tax, round-off, total), `byRate`, `bySupplyType` (B2B = GSTIN present / B2C, each intra and inter), `numberRange`, `reconciliation`, `reversed {count, items (first 200) with reversedAfterPeriod}`, `warnings` |
+| GET | `/invoices?page&limit` | Paginated register (20, max 100), sorted by date then number |
+| GET | `/hsn` | HSN rows (HSN, rate, unit, quantity, taxable, apportioned taxes), totals, `taxApportioned: true`, `warnings` |
+| GET | `/export.csv?section=register\|rate\|hsn` | A CSV download |
+
+**Pipelines and indexes:** every query matches `{ status, invoiceDate }`, which is served by the existing `{status, invoiceDate, _id}` index; no new index is needed.
+- **Summary:** one aggregation with `$facet`:
+  - totals and the reconciliation count in one `$group`
+  - by rate: `$unwind taxSummary` then `$group`
+  - B2B/B2C: `$group` by GSTIN present and tax type
+  - number range: sort by date and sequence, then first and last
+  - The reversed list is one small capped `find` plus a count.
+- **HSN:** one aggregation (`$unwind lines` then `$group` by HSN, rate and unit, plus the rate totals), then the apportionment in `utils/gstReport.js`.
+- **Register:** `find` with skip/limit plus `countDocuments`.
+
+**CSV (no package):**
+- **Format:** UTF-8 with a BOM (so Excel shows ₹ and Indian names correctly), CRLF line endings, RFC 4180 quoting (comma, quote or line break means quoted, with inner quotes doubled).
+- **Formula-injection protection:** text cells starting with `=`, `+`, `-`, `@`, tab or CR get a leading apostrophe. Amounts come only from the server's own formatter (integer paise to `125.50` / `-0.26` with string math) and stay numeric.
+- **Contents:** each file starts with a title and period line and the column header, and ends with a TOTAL row.
+  - The rate file also has the invoice-level round-off and grand total rows, so it reconciles on its own.
+  - Files are named `gst-<section>-<2026-11 | FY2026-27 | from_to_to>.csv`.
+- **Cap:** the register export is capped at **5,000 invoices**; a longer period returns 400 asking for a shorter one.
+- **Register columns:** Invoice Date, Invoice No, Customer, GSTIN, Supply Type (B2B/B2C), State, Tax Type, Taxable Value, CGST, SGST, IGST, Round Off, Invoice Total.
+
+**Not GSTR-1.** The files are a generic layout for the accountant to reshape. A GSTR-1 export would also need:
+- invoice type (regular, SEZ, export, deemed export)
+- a reverse-charge flag
+- an e-commerce operator GSTIN
+- the B2C-large classification rule
+- credit and debit notes (not built)
+- units mapped to GST UQC codes
+- HSN descriptions
+- a "documents issued" summary (the report already gives the number range and the reversed count)
+
+**Frontend:** `/admin/reports/gst` ("GST Report" after Challans in the sidebar and the mobile More sheet):
+- `Back`, then a FY select, a month select (or Whole year) and a Custom range option.
+- Summary cards: Taxable, CGST, SGST, IGST, Round Off, Total. Then the invoice count, number range, reconciliation badge and reversed count.
+- The rate-wise, B2B/B2C and HSN tables, and the paginated register (rows open the invoice).
+- **Download CSV** for the rate, HSN and register sections. It uses an authenticated Blob download.
+- The reversed list carries the "reversed after period" badge.
+- Each section has its own loading, error with Retry, and empty state.
+- On mobile, tables become flat rows and the cards sit two to a row.
+
+### Planned (later steps)
 
 **Document rules (approved):**
 
@@ -723,7 +788,7 @@ Existing invoice responses only gained fields (the stored dispatch counters, and
 | Estimate converted to Invoice (Built, 11D) | No second deduction | Invoice tax fields apply | Payments carried over; the estimate and invoice links are auditable |
 | Challan (Built, 11E) | None; the invoice already deducted the stock | No GST, GSTIN or prices | No sales or payment balance effect |
 
-The monthly GST report is built from GST invoices only. A legacy `POST /api/customers/:id/order` stub exists (no frontend caller, no Order model).
+The monthly GST report (Built, 11F) is built from GST invoices only. A legacy `POST /api/customers/:id/order` stub exists (no frontend caller, no Order model).
 
 ## 16. Planned: Labels
 
@@ -804,3 +869,4 @@ These apply to every change. They do not authorize redesigning a working workflo
 14. **Conversion moves ownership of already-deducted stock and never touches stock.** A conversion transaction contains no StockItem update and no StockMovement, so stock can be neither deducted twice nor returned twice. Money moves by carry-over (copy plus a `transferred` mark), never by voiding real payments.
 15. **Claim a document with its revision before changing its status.** Conversion, like edit, cancel, payment and void, first bumps `revision` on an active document; once it is no longer active, every later attempt is a 409. Back this with a unique partial index on the link field.
 16. **Keep dispatch counters on the parent document, under its revision lock.** A cap that spans several child records (challans per invoice line) is enforced by updating counters on the parent in the same transaction as the child write, after bumping the parent's revision. Reads and guards then need no extra query, and concurrent children serialize.
+17. **Reports read saved snapshots and aggregate on the server.** A report never recomputes from current master data and never sends every document to the browser: it filters by an indexed date range in MongoDB, paginates detail rows, caps exports, and checks its own totals reconcile. CSV cells that could start a formula are neutralised.
