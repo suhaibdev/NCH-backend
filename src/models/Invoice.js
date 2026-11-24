@@ -32,6 +32,9 @@ const lineSchema = new mongoose.Schema(
     pricePaise: paise("Price must be whole paise.", { min: 1 }),
     taxablePaise: paise("Taxable value must be whole paise.", { min: 1 }),
     batchReference: { type: String, default: "", trim: true, maxlength: 100 },
+    // Quantity already covered by ACTIVE delivery challans (Step 11E). Kept in
+    // step with challans inside the same transaction, under the invoice lock.
+    dispatchedQuantity: { type: Number, default: 0, min: 0 },
   },
   { _id: true }
 );
@@ -140,6 +143,11 @@ const invoiceSchema = new mongoose.Schema(
     reversedAt: { type: Date, default: null },
     reversedBy: { type: String, default: "" },
     reverseReason: { type: String, default: "", trim: true, maxlength: 250 },
+
+    // Dispatch counters (Step 11E). Challans are the auditable record; these
+    // make dispatch progress and the reverse/edit guards free of extra queries.
+    activeChallanCount: { type: Number, default: 0, min: 0 },
+    dispatchStatus: { type: String, enum: ["none", "partial", "full"], default: "none" },
 
     // Reserved for Step 11D (estimate conversion without a second stock deduction).
     sourceEstimate: { type: mongoose.Schema.Types.ObjectId, ref: "Estimate", default: null },

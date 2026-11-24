@@ -210,7 +210,7 @@ router.get("/", async (req, res) => {
     const [rows, total] = await Promise.all([
       Invoice.find(filter)
         .select(
-          "invoiceNumber invoiceDate customer customerSnapshot taxType totalPaise status lines._id sourceEstimateNumber"
+          "invoiceNumber invoiceDate customer customerSnapshot taxType totalPaise status lines._id sourceEstimateNumber dispatchStatus"
         )
         .sort({ invoiceDate: -1, _id: -1 })
         .skip(paging.skip)
@@ -237,6 +237,7 @@ router.get("/", async (req, res) => {
         customerName: row.customerSnapshot?.billingName || row.customerSnapshot?.name || "",
         taxType: row.taxType,
         sourceEstimateNumber: row.sourceEstimateNumber || "",
+        dispatchStatus: row.dispatchStatus || "none",
         totalPaise: row.totalPaise,
         paidPaise,
         outstandingPaise: row.totalPaise - paidPaise,
@@ -420,6 +421,14 @@ router.put("/:id", async (req, res) => {
     const detail = await runTransaction(async (session) => {
       const invoice = await lockActiveInvoice(invoiceId, actor, session, "edited");
 
+      // Dispatched goods have left the factory: lines cannot change under active challans.
+      if ((invoice.activeChallanCount || 0) > 0) {
+        throw requestError(
+          409,
+          "This invoice has active delivery challans and cannot be edited. Cancel the challans first."
+        );
+      }
+
       const validPayments = await loadValidPayments(invoiceId, session);
       if (validPayments.length > 0) {
         throw requestError(409, "This invoice has payments and is locked. Reverse it instead.");
@@ -530,6 +539,14 @@ router.post("/:id/reverse", async (req, res) => {
   try {
     const detail = await runTransaction(async (session) => {
       const invoice = await lockActiveInvoice(invoiceId, actor, session, "reversed");
+
+      // Goods covered by a challan have physically left: do not silently return their stock.
+      if ((invoice.activeChallanCount || 0) > 0) {
+        throw requestError(
+          409,
+          "Cancel the delivery challans for this invoice before reversing it."
+        );
+      }
 
       const validPayments = await loadValidPayments(invoiceId, session);
       if (validPayments.length > 0) {

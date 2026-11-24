@@ -32,7 +32,7 @@ Continue building the NCH Factory Management System in controlled, testable phas
 | Area | Feature | Status | Notes |
 |---|---|---|---|
 | Core | Authentication | Built | Admin role only |
-| Core | Admin Shell (sidebar, mobile bottom nav) | Built | Order: Dashboard, Products, Attendance, Stock, Factory Flow, Payout, Washers, Suppliers, Customers, Estimates, Invoices, Employees. Estimates and Invoices sit in the mobile More sheet. No Stock dropdown. |
+| Core | Admin Shell (sidebar, mobile bottom nav) | Built | Order: Dashboard, Products, Attendance, Stock, Factory Flow, Payout, Washers, Suppliers, Customers, Estimates, Invoices, Challans, Employees. Estimates, Invoices and Challans sit in the mobile More sheet. No Stock dropdown. |
 | Core | Dashboard | Partial | Month salary and month advance use the IST month; "today" counts still use server-local time |
 | HR | Employees | Built | |
 | HR | Attendance, Bulk | Built | Default hours from `STANDARD_WORK_HOURS = 8`, max 8, `DD/MM/YY` date input |
@@ -66,7 +66,7 @@ Continue building the NCH Factory Management System in controlled, testable phas
 | Sales | Estimates | Built | Step 11B. No GST/HSN; `EST/2026-27/0001` per financial year; stock deducted at creation, edited by difference, returned on cancel; payments with void; print. Can be converted to an invoice (11D) |
 | Sales | Estimate to Invoice conversion | Built | Step 11D. No second stock deduction; GST added on top of the saved estimate prices; payments carried over and marked transferred; the estimate becomes read-only `converted`; reversing the invoice returns stock once and the estimate stays converted |
 | Sales | Invoices | Built | Step 11C. GST tax invoices `INV/2026-27/0001`. Prices exclusive of GST; tax once per rate group; grand total rounded with a round-off line; CGST + SGST for state 09, otherwise IGST. Edit only before payment; reversal; payments with void; print. Blocked until seller details are configured |
-| Sales | Challans | Planned | |
+| Sales | Delivery Challans | Built | Step 11E. Invoice-only; no GST, prices, stock or ledger effect; `CH/2026-27/0001` series; partial dispatch capped per invoice line; cancel frees the quantity; edit is transport and notes only; invoice reverse and edit are blocked while challans are active; print |
 | Sales | GST report | Planned | |
 | Sales | Orders | Planned | A legacy stub route exists with no caller |
 | Platform | Portals (customer, supplier) | Planned | |
@@ -152,6 +152,8 @@ There is no test runner and no `test` script. The files are plain `assert` scrip
 | `test/estimate-conversion.test.js` | Eligibility, conversion lines from saved snapshots, HSN/GST blocks naming the item, conversion tax (GST on top, reconciled), payment carry-over cap including the 0% edge, converted-estimate summary, the customer estimate account math, request validation (no quantities or prices accepted), model fields and the two unique partial indexes |
 | `test/estimate-conversion-session.test.js` | Convert and preview routes with fake sessions: no StockItem update and no StockMovement, double conversion and cancelled estimates blocked, missing HSN/GST, state and seller rules, payments carried and marked transferred, paid-above-total blocked, abort and end once, never two operations on one session; converted estimate is read-only; reversing the invoice returns stock exactly once and the estimate stays converted |
 | `test/estimate-account.test.js` | The real customer estimate-account and invoice-account routes against in-memory data: a converted estimate is excluded from the estimate total and outstanding, transferred payments are not estimate payments, the money is counted once in the invoice account |
+| `test/challans.test.js` | Challan numbering across 31 Mar / 1 Apr, remaining-quantity math, the dispatch cap (single, several summing to the cap, cap plus one, cancelled challans freeing quantity), dispatch status, counters agreeing with the challans, payload and edit validation, and the schema having no GST, GSTIN, price or tax fields |
+| `test/challan-session.test.js` | Challan routes with fake sessions and a simulated invoice lock: zero StockItem, StockMovement and payment writes, two and three challans racing for the last quantity, cancel (also twice and at once), reversed invoices, validation before any session, abort and end once, edit limited to transport and notes, dispatch summary and list, and invoice reverse and edit blocked while challans are active |
 | `test/invoice-session.test.js` | Invoice create, edit, reverse, payment and void routes with fake sessions: snapshots and tax, IGST without GSTIN, no-state, missing HSN/GST and seller-not-configured blocks, shortage writes nothing, edit locked after payment, abort and end once, never two operations on one session |
 | `test/washing.test.js` | Washing helpers (paise, size, charge, identity) |
 | `test/washing-session.test.js` | Send and complete transaction handling |
@@ -222,6 +224,16 @@ Run these against a connected database before a release.
 - The first invoice after 1 April gets `INV/<new FY>/0001`.
 - With the bank env variables set, the bank block prints; without them it is omitted.
 
+**Delivery Challans (Step 11E, needs live MongoDB):**
+- Create a challan for part of an invoice: stock and Stock History do not change, payments do not change, and the invoice shows Partly dispatched with the remaining quantities.
+- A second challan for the rest makes the invoice Fully dispatched. A further challan is refused.
+- Two browser tabs creating a challan for the last quantity at the same time: one succeeds and the other gets 409; the invoice never shows more dispatched than ordered.
+- Cancel a challan: its quantity returns to the remaining pool and a new challan can use it. Cancelling twice, or in two tabs, frees it once.
+- Reversing or editing an invoice with an active challan is refused with a clear message. After cancelling the challans, the reversal works and returns stock once.
+- Edit the transport details and notes; quantities cannot be changed from the edit form.
+- The first challan after 1 April gets `CH/<new FY>/0001`.
+- Print: no prices, GST or GSTIN; the table header repeats on later pages; a cancelled challan prints a CANCELLED banner.
+
 **Estimate to Invoice conversion (Step 11D, needs live MongoDB):**
 - Convert an estimate that has two payments. Stock does not change and Stock History gets no new rows. The invoice has the same lines at the saved prices, with GST added on top.
 - The estimate shows Converted, read-only, with the link to the invoice, and its payments show "Transferred". The invoice shows both payments as carried.
@@ -276,7 +288,7 @@ Order of work (each item follows section 4 before it starts):
 1. **Stock History page**: Built (`/admin/stock/history`, paginated, with filters). Nothing remaining.
 2. **Backlog hardening** (section 7): month and today in IST, payout edit audit trail, pagination and indexes, split `PayoutPage.jsx`, scope the global button rule, prettier clean-up.
 3. **Labels.** Confirm the label specification first (`NCH_Architecture_Plan.md` section 16), then build the product selector, template, batch and date inputs, preview and PDF or print output.
-4. **Sales documents** (rules in `NCH_Architecture_Plan.md` section 15). Step 11A (customer billing details, customer prices, Finished Goods HSN and GST rate), Step 11B (Estimates with payments) and Step 11C (GST Invoices with payments) and Step 11D (Estimate to Invoice conversion) are built. Before invoices go live, fill in `src/config/sellerProfile.js` and set the bank env variables, and get the accountant's sign-off on the rounding. Next: Challans (11E), then the monthly GST report (11F).
+4. **Sales documents** (rules in `NCH_Architecture_Plan.md` section 15). Step 11A (customer billing details, customer prices, Finished Goods HSN and GST rate), Step 11B (Estimates with payments), Step 11C (GST Invoices with payments), Step 11D (Estimate to Invoice conversion) and Step 11E (Delivery Challans) are built. Before invoices go live, fill in `src/config/sellerProfile.js` and set the bank env variables, and get the accountant's sign-off on the rounding. Next: the monthly GST report (11F).
 5. **Reports:** inventory by category, low stock, stock movement, raw material consumption, manufacturing, wastage, Finished Goods production, payroll register, attendance summaries, monthly GST report. Build after operational workflows are stable.
 6. **Portals, orders, notifications and dashboard analytics** (`NCH_Architecture_Plan.md` section 17).
 7. **Performance Phase 2.** Only after live timing and query-plan evidence.

@@ -79,7 +79,8 @@ Admin  →  React frontend  →  Axios / REST  →  Express backend  →  Mongoo
 | Estimates (create, edit, cancel, payments, print) | Built (11B) |
 | GST Invoices (create, edit before payment, reverse, payments, print) | Built (11C) |
 | Estimate to Invoice conversion (convert, carry-over of payments, links) | Built (11D) |
-| Challans, GST report | Planned |
+| Delivery Challans (against an invoice, partial dispatch, cancel, print) | Built (11E) |
+| GST report | Planned |
 | Labels page and label printing | Planned (Label exists only as a Manufacturing input rule) |
 | Portals, Orders, Notifications | Planned |
 
@@ -98,6 +99,7 @@ src/
     ├── Customer/    CustomersPage  CustomerDetailPage
     ├── Estimates/   EstimatesPage  EstimateFormPage  EstimateDetailPage  EstimatePrint
     ├── Invoices/    InvoicesPage  InvoiceFormPage  InvoiceDetailPage  InvoicePrint  InvoiceTaxBreakdown
+    ├── Challans/    ChallansPage  ChallanFormPage  ChallanDetailPage  ChallanPrint
     ├── Sales/       DocumentPayments (shared by Estimate and Invoice detail pages)
     ├── Employees/   EmployeesPage  Attendance  PayoutPage  SalarySlip
     ├── Suppliers/   SuppliersPage  SupplierDetailPage  ReceiveMaterialPage
@@ -109,7 +111,7 @@ src/
 
 `pages/Products.jsx` is a public marketing section on the home page; it is not the admin Products item. `WasherDetailFixed.jsx` is the live route for washer master data and rates; the name is legacy. `Stock/StockHistoryPage` serves `/admin/stock/history`. There is no `LabelsPage` or `WashingPage`.
 
-Backend: `index.js`; `src/config/sellerProfile.js` (public NCH seller details); `src/routes/` (17 route files), `src/models/` (30 models), `src/middleware/` (auth, role, database readiness), `src/utils/` (helpers listed per feature below), `test/` (plain Node assert scripts, see Development Plan section 6).
+Backend: `index.js`; `src/config/sellerProfile.js` (public NCH seller details); `src/routes/` (18 route files), `src/models/` (32 models), `src/middleware/` (auth, role, database readiness), `src/utils/` (helpers listed per feature below), `test/` (plain Node assert scripts, see Development Plan section 6).
 
 ## 5. Routes and navigation
 
@@ -131,6 +133,9 @@ Backend: `index.js`; `src/config/sellerProfile.js` (public NCH seller details); 
 /admin/invoices/new                             create (?customer= preselects)
 /admin/invoices/:invoiceId                      detail, tax summary, payments, reverse, print
 /admin/invoices/:invoiceId/edit                 edit lines and notes (only while no valid payment)
+/admin/challans                                 delivery challan list (filters sync to the URL, e.g. ?invoice=)
+/admin/challans/new                             create against an invoice (?invoice= required)
+/admin/challans/:challanId                      detail, edit transport, cancel, print
 /admin/stock/history                            stock movement history
 /admin/suppliers
 /admin/suppliers/:supplierId
@@ -156,7 +161,6 @@ Legacy redirects: `/employees`, `/customers`, `/employees/attendance`, `/employe
 
 ```text
 /admin/labels            label generation and printing
-/admin/challans
 /admin/reports/gst
 ```
 
@@ -164,9 +168,9 @@ Legacy redirects: `/employees`, `/customers`, `/employees/attendance`, `/employe
 
 All admin routes render through one responsive `AdminShell`. The public `Navbar` is used only on the public home page.
 
-- **Desktop:** a fixed, collapsible dark-navy sidebar. Order: **Dashboard, Products, Attendance, Stock, Factory Flow, Payout, Washers, Suppliers, Customers, Estimates, Invoices, Employees.** Logout is a separate button at the bottom. There is no Stock dropdown. Products opens `/admin/stock/manage`.
+- **Desktop:** a fixed, collapsible dark-navy sidebar. Order: **Dashboard, Products, Attendance, Stock, Factory Flow, Payout, Washers, Suppliers, Customers, Estimates, Invoices, Challans, Employees.** Logout is a separate button at the bottom. There is no Stock dropdown. Products opens `/admin/stock/manage`.
 - **Brand:** `NCH` with `NEW CALCUTTA HANDLOOM` beneath it. The Admin identity shows at the right. There is no notification bell and no profile menu.
-- **Mobile:** a compact brand header plus a fixed bottom bar: **Home, Attendance, Stock, More.** The More sheet holds Products, Factory Flow, Payout, Washers, Suppliers, Customers, Estimates, Invoices, Employees and Logout.
+- **Mobile:** a compact brand header plus a fixed bottom bar: **Home, Attendance, Stock, More.** The More sheet holds Products, Factory Flow, Payout, Washers, Suppliers, Customers, Estimates, Invoices, Challans, Employees and Logout.
 - **Collapsed rail:** centered `NCH` row, then the centered chevron toggle below it.
 - The shell makes no startup data requests. Responsive padding and bottom-bar clearance come from the shell.
 
@@ -648,7 +652,67 @@ Existing responses only gained fields: estimate `summary.transferredPaise` and `
 
 A converted estimate shows a banner linking to the invoice, "Moved to Invoice" in the summary, and payments marked "Transferred to INV/…". The invoice shows "from EST/…" in its list, header and details, and carried payments show "Carried from EST/…". The estimate list has a Converted status filter.
 
-### Planned (Steps 11E and later)
+### Built in Step 11E: Delivery Challans
+
+**Final rules (approved):**
+- A challan is a manual **delivery record** against exactly one invoice. It never stands alone and is not created from an estimate; a converted estimate is dispatched through its invoice.
+- **No GST, no GSTIN, no prices, no tax amounts** anywhere: not in the model, the API, the screens or the print. The print shows the seller's public details only (no GSTIN, PAN or bank).
+- **No stock effect.** A challan never creates a StockMovement and never changes a StockItem; the invoice already deducted the stock. **No payment or ledger effect:** it never touches an invoice or estimate payment or balance. Challans do not depend on stock availability.
+- Number `CH/2026-27/0001`: its own counter per financial year (April to March, from the challan date), generated inside the creating transaction. It is never shared with invoices or estimates, and a cancelled challan's number is not reused.
+- **Partial dispatch with a hard cap.** One invoice may have many challans. For every invoice line, the quantity on all **active** challans can never exceed the invoice line quantity. A cancelled challan returns its quantities to the remaining pool.
+- The challan date is date-only (default today in IST, not in the future, not before the invoice date).
+- **Invoice status:** challans can be created only for **active** invoices.
+- **Invoice reverse and edit are blocked (409) while the invoice has active challans.** The goods have physically left, so their stock must not be returned silently, and an edit must not cut a line below what has been dispatched. Cancel the challans first; after that the invoice reverses normally and returns its stock once.
+- **Cancel** needs a reason and keeps the record. **Edit** is limited to the transport fields and notes; quantities change by cancelling and creating a new challan, so the cap logic lives in one place.
+- Optional fields (printed only when filled): transporter name, vehicle number, LR (lorry receipt) number, LR date, notes.
+
+**Models** (additive; no migration needed):
+- `Challan`:
+  - Number and invoice reference: `challanNumber`, `financialYear`, `sequence`, `invoice`, `invoiceNumber`, `invoiceDate`.
+  - Snapshots: `customer`, `customerSnapshot { name, billingName, contactNumber, shipTo{...} }`, and `seller` (public details only).
+  - Date, lines and transport: `challanDate`, `lines[] { invoiceLine, item, productName, unit, quantity }`, `transport { transporterName, vehicleNumber, lrNumber, lrDate }`.
+  - Status and audit: `notes`, `status active|cancelled`, `cancelledAt`, `cancelledBy`, `cancelReason`, `revision`, `createdBy`, `updatedBy`, timestamps.
+  - Indexes: unique `challanNumber`; `{invoice, challanDate, _id}`; `{customer, challanDate, _id}`; `{status, challanDate, _id}`; `{challanDate, _id}`.
+- `ChallanCounter`: `{financialYear unique, sequence}`.
+- `Invoice` (defaults, so existing invoices read as "nothing dispatched"): `lines[].dispatchedQuantity`, `activeChallanCount`, `dispatchStatus none|partial|full`.
+
+**Dispatch counters instead of queries.** The invoice carries the dispatched quantity per line, the number of active challans and the overall status. They are updated **in the same transaction** as every challan create or cancel, under the invoice lock. So invoice detail and list show ordered, dispatched and remaining with no extra queries, and the reverse and edit guards need no challan lookup. The challans stay the audit record; a pure helper recomputes the quantities from them and a test checks both agree.
+
+**Endpoints** (`/api/challans`, admin only):
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/invoice-dispatch/:invoiceId` | Invoice header, `dispatchStatus`, `canCreate`, per-line `orderedQuantity / dispatchedQuantity / remainingQuantity`, and the invoice's challans. One invoice read plus one challan query |
+| POST | `/` | `{ invoice, challanDate?, lines:[{invoiceLine, quantity}], transport?, notes? }` → 201 |
+| GET | `/` | Paginated (20, max 100). Filters: `customer`, `invoice`, `status`, `from`, `to`, `search` (number) |
+| GET | `/:id` | `{ challan }` |
+| PUT | `/:id` | `{ transport?, notes? }` only; any other field is rejected with 400 |
+| POST | `/:id/cancel` | `{ reason }`; 409 if already cancelled |
+
+Existing invoice responses only gained fields (the stored dispatch counters, and `dispatchStatus` on list rows).
+
+**Create transaction** (payload validated before the session opens):
+1. Lock the invoice: bump `revision` on an **active** invoice (404, or 409 if not active).
+2. The challan date must not be before the invoice date.
+3. `planDispatch`: every line belongs to the invoice, each at most once, and `quantity <= ordered - dispatched`; otherwise 400, or 409 naming the product and the remaining quantity.
+4. Take the next `CH` number, then create the challan with its snapshots.
+5. Update the invoice, conditional on the locked revision: add the quantities to each line's `dispatchedQuantity`, add 1 to `activeChallanCount`, and set `dispatchStatus`.
+
+**Cancel transaction:** lock the invoice, flip the challan from `active` to `cancelled` (409 if it already was), then subtract its quantities and 1 from the invoice counters and recompute `dispatchStatus`.
+
+**Concurrency:** every challan create, challan cancel, invoice edit and invoice reverse bumps the same invoice `revision` first, so they run one after another.
+- Two challans racing for the last quantity: the loser is retried, re-reads the counters, fails the cap check and gets 409 with nothing written.
+- A challan racing an invoice reverse or edit: the second one sees the other's result (active challans block the reversal; a reversed invoice blocks the challan).
+- Two cancels of one challan: only one flips the status, so a quantity is never freed twice.
+
+**Frontend:**
+- **Navigation:** Challans sits after Invoices in the sidebar and in the mobile More sheet.
+- **Pages:** `pages/Challans/` holds the list (whole-row click, filters, `?invoice=`), the create form (`/admin/challans/new?invoice=<id>`, prefilled with the remaining quantities, editable down), the detail page (edit transport, cancel with a reason, print) and the print.
+- **Invoice detail:** it shows a dispatch badge and a Dispatch section (ordered, dispatched and remaining per line, the challan list, **Create Challan**). It hints that Edit and Reverse are unavailable while challans are active.
+- **Invoice list:** it has a Dispatch column.
+- **Print:** it uses the same portal pattern as the invoice print (`body.ch-printing`), from the saved snapshot only: seller, challan number and date, invoice reference, deliver-to, optional transport, product / unit / quantity with the total, the receipt line and the signature blocks.
+
+### Planned (Steps 11F and later)
 
 **Document rules (approved):**
 
@@ -657,9 +721,9 @@ A converted estimate shows a banner linking to the invoice, "Moved to Invoice" i
 | Estimate (Built, 11B) | Deducts stock on creation; edit adjusts by difference; cancel returns it | No HSN or GST | Separate Estimate ledger, payments and balance |
 | Invoice (Built, 11C) | Deducts stock on creation; edit (before payment) adjusts by difference; reversal returns it | HSN, GST rate, customer GSTIN, CGST/SGST or IGST | Customer Invoice ledger, payments and balance |
 | Estimate converted to Invoice (Built, 11D) | No second deduction | Invoice tax fields apply | Payments carried over; the estimate and invoice links are auditable |
-| Challan | Manual; no stock effect | No GST or GSTIN | No sales or payment balance effect |
+| Challan (Built, 11E) | None; the invoice already deducted the stock | No GST, GSTIN or prices | No sales or payment balance effect |
 
-One invoice may have partial or multiple challans; challan quantities cannot exceed the document quantity. The monthly GST report is built from GST invoices only. A legacy `POST /api/customers/:id/order` stub exists (no frontend caller, no Order model).
+The monthly GST report is built from GST invoices only. A legacy `POST /api/customers/:id/order` stub exists (no frontend caller, no Order model).
 
 ## 16. Planned: Labels
 
@@ -739,3 +803,4 @@ These apply to every change. They do not authorize redesigning a working workflo
 13. **Seller secrets stay out of source.** Public seller details live in `src/config/sellerProfile.js`. Bank details come from environment variables; only their names are listed in `.env.example`.
 14. **Conversion moves ownership of already-deducted stock and never touches stock.** A conversion transaction contains no StockItem update and no StockMovement, so stock can be neither deducted twice nor returned twice. Money moves by carry-over (copy plus a `transferred` mark), never by voiding real payments.
 15. **Claim a document with its revision before changing its status.** Conversion, like edit, cancel, payment and void, first bumps `revision` on an active document; once it is no longer active, every later attempt is a 409. Back this with a unique partial index on the link field.
+16. **Keep dispatch counters on the parent document, under its revision lock.** A cap that spans several child records (challans per invoice line) is enforced by updating counters on the parent in the same transaction as the child write, after bumping the parent's revision. Reads and guards then need no extra query, and concurrent children serialize.
