@@ -96,6 +96,9 @@ const stockMovementSchema =
           "estimate_out",
           "estimate_return",
 
+          "invoice_out",
+          "invoice_return",
+
           "adjustment",
         ],
       },
@@ -152,6 +155,7 @@ const stockMovementSchema =
           "manual",
           "material_receipt",
           "estimate",
+          "invoice",
         ],
         default: "",
       },

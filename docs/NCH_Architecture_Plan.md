@@ -18,7 +18,7 @@ Status tags used in this file: **Built** (working route and UI exist), **Partial
 12. Attendance
 13. Payroll and Payout
 14. Dashboard
-15. Customer pricing (Built) and sales documents (Planned)
+15. Customer pricing, Estimates and Invoices (Built); other sales documents (Planned)
 16. Planned: Labels
 17. Planned: portals, orders, notifications and analytics
 18. UI/UX standards
@@ -77,7 +77,8 @@ Admin  →  React frontend  →  Axios / REST  →  Express backend  →  Mongoo
 | Manufacturing (create, history, reversal) | Built |
 | Products | Partial (a navigation alias to Stock Management; no Product model) |
 | Estimates (create, edit, cancel, payments, print) | Built (11B) |
-| Invoices, Challans, Estimate to Invoice conversion, GST report | Planned |
+| GST Invoices (create, edit before payment, reverse, payments, print) | Built (11C) |
+| Challans, Estimate to Invoice conversion, GST report | Planned |
 | Labels page and label printing | Planned (Label exists only as a Manufacturing input rule) |
 | Portals, Orders, Notifications | Planned |
 
@@ -90,11 +91,13 @@ src/
 ├── App.jsx  index.jsx
 ├── components/   AdminLayout  AdminShell(.css)  Navbar(.css)  ProtectedRoute
 ├── config/       api.js  auth.js  axios.js
-├── utils/        businessDate.js  estimates.js  gst.js  text.js  washerPayoutCycle.js
+├── utils/        businessDate.js  estimates.js  gst.js  invoiceTax.js  text.js  washerPayoutCycle.js
 └── pages/
     ├── AdminCommon.css  AdminPortalPage  FactoryFlowPage  HomePage  Hero  Login  Products
     ├── Customer/    CustomersPage  CustomerDetailPage
     ├── Estimates/   EstimatesPage  EstimateFormPage  EstimateDetailPage  EstimatePrint
+    ├── Invoices/    InvoicesPage  InvoiceFormPage  InvoiceDetailPage  InvoicePrint  InvoiceTaxBreakdown
+    ├── Sales/       DocumentPayments (shared by Estimate and Invoice detail pages)
     ├── Employees/   EmployeesPage  Attendance  PayoutPage  SalarySlip
     ├── Suppliers/   SuppliersPage  SupplierDetailPage  ReceiveMaterialPage
     └── Stock/       StockHomePage  StockPage  StockTypesPage  StockTypeProductsPage
@@ -103,9 +106,9 @@ src/
                      WasherDetailFixed  WasherDetailPage  WasherPayoutSlipPage
 ```
 
-`pages/Products.jsx` is a public marketing section on the home page; it is not the admin Products item. `WasherDetailFixed.jsx` is the live route for washer master data and rates; the name is legacy. There is no `StockHistoryPage`, `LabelsPage` or `WashingPage`.
+`pages/Products.jsx` is a public marketing section on the home page; it is not the admin Products item. `WasherDetailFixed.jsx` is the live route for washer master data and rates; the name is legacy. `Stock/StockHistoryPage` serves `/admin/stock/history`. There is no `LabelsPage` or `WashingPage`.
 
-Backend: `index.js`; `src/routes/` (15 route files), `src/models/` (27 models), `src/middleware/` (auth, role, database readiness), `src/utils/` (helpers listed per feature below), `test/` (plain Node assert scripts, see Development Plan section 6).
+Backend: `index.js`; `src/config/sellerProfile.js` (public NCH seller details); `src/routes/` (16 route files), `src/models/` (30 models), `src/middleware/` (auth, role, database readiness), `src/utils/` (helpers listed per feature below), `test/` (plain Node assert scripts, see Development Plan section 6).
 
 ## 5. Routes and navigation
 
@@ -123,6 +126,11 @@ Backend: `index.js`; `src/routes/` (15 route files), `src/models/` (27 models), 
 /admin/estimates/new                            create (?customer= preselects)
 /admin/estimates/:estimateId                    detail, payments, cancel, print
 /admin/estimates/:estimateId/edit               edit lines and notes
+/admin/invoices                                 GST invoice list (filters sync to the URL)
+/admin/invoices/new                             create (?customer= preselects)
+/admin/invoices/:invoiceId                      detail, tax summary, payments, reverse, print
+/admin/invoices/:invoiceId/edit                 edit lines and notes (only while no valid payment)
+/admin/stock/history                            stock movement history
 /admin/suppliers
 /admin/suppliers/:supplierId
 /admin/suppliers/:supplierId/receive
@@ -146,9 +154,7 @@ Legacy redirects: `/employees`, `/customers`, `/employees/attendance`, `/employe
 ### Planned routes (no page exists)
 
 ```text
-/admin/stock/history     complete stock movement history
 /admin/labels            label generation and printing
-/admin/invoices
 /admin/challans
 /admin/reports/gst
 ```
@@ -157,9 +163,9 @@ Legacy redirects: `/employees`, `/customers`, `/employees/attendance`, `/employe
 
 All admin routes render through one responsive `AdminShell`. The public `Navbar` is used only on the public home page.
 
-- **Desktop:** a fixed, collapsible dark-navy sidebar. Order: **Dashboard, Products, Attendance, Stock, Factory Flow, Payout, Washers, Suppliers, Customers, Estimates, Employees.** Logout is a separate button at the bottom. There is no Stock dropdown. Products opens `/admin/stock/manage`.
+- **Desktop:** a fixed, collapsible dark-navy sidebar. Order: **Dashboard, Products, Attendance, Stock, Factory Flow, Payout, Washers, Suppliers, Customers, Estimates, Invoices, Employees.** Logout is a separate button at the bottom. There is no Stock dropdown. Products opens `/admin/stock/manage`.
 - **Brand:** `NCH` with `NEW CALCUTTA HANDLOOM` beneath it. The Admin identity shows at the right. There is no notification bell and no profile menu.
-- **Mobile:** a compact brand header plus a fixed bottom bar: **Home, Attendance, Stock, More.** The More sheet holds Products, Factory Flow, Payout, Washers, Suppliers, Customers, Estimates, Employees and Logout.
+- **Mobile:** a compact brand header plus a fixed bottom bar: **Home, Attendance, Stock, More.** The More sheet holds Products, Factory Flow, Payout, Washers, Suppliers, Customers, Estimates, Invoices, Employees and Logout.
 - **Collapsed rail:** centered `NCH` row, then the centered chevron toggle below it.
 - The shell makes no startup data requests. Responsive padding and bottom-bar clearance come from the shell.
 
@@ -389,13 +395,13 @@ Hard and permanent. `DELETE /api/payout/:id` and `DELETE /api/payout/bulk/:id` e
 
 **Partial.** `GET /api/dashboard` returns employee counts, today's attendance, recent employees and salary and advance totals for the month. It uses parallel reads and `lean()`; unused all-history advance data is not computed. The month salary card sums `Payout` and `BulkPayout` over the IST calendar month (fixed +05:30, bounds are IST midnight instants); month advance uses the IST month start at UTC midnight because attendance dates are stored that way. "Today" still uses server-local time (backlog).
 
-## 15. Customer pricing (Built) and sales documents (Planned)
+## 15. Customer pricing, Estimates and Invoices (Built); other sales documents (Planned)
 
 ### Final design decisions (approved, Step 11A)
 
 - NCH is registered in Uttar Pradesh, GST state code `09`.
-- Tax type is decided from the customer's `stateCode` (Step 11C): state `09` gives CGST + SGST, any other state gives IGST, and a customer with no GSTIN is treated as local (CGST + SGST).
-- GST is calculated **once on the invoice taxable total**, not per line, rounded to the nearest rupee with a separate round-off line (Step 11C).
+- Tax type is decided **only** from the customer's `stateCode` (revised in Step 11C): state `09` gives CGST + SGST, any other valid state gives IGST, whether or not the customer has a GSTIN. A customer without a valid state cannot be invoiced. (The earlier "no GSTIN = local" fallback was removed.)
+- GST is calculated **once per GST-rate group** on that group's taxable total, not per line. The grand total is rounded to the nearest rupee with a separate round-off line (Step 11C; full algorithm below).
 - **There is no default selling price.** Prices exist only per customer per product. A customer can be billed only for a product that has an active price assigned to that customer.
 - Finished Goods keep an HSN code and a GST rate. These are tax metadata, never prices or a manufacturing cost.
 - Allowed GST rates: **0, 0.25, 3, 5, 18, 40** percent. Default 5. (12 and 28 are rejected.)
@@ -495,14 +501,108 @@ Hard and permanent. `DELETE /api/payout/:id` and `DELETE /api/payout/bulk/:id` e
   - The table header repeats and rows avoid page breaks.
 - The customer detail page has an Estimate Account section with links to the list (filtered) and to New Estimate.
 
-### Planned (Steps 11C and later)
+### Built in Step 11C: GST Invoices
+
+**Final rules (approved):**
+- Number `INV/2026-27/0001`: its own counter per financial year, from the invoice date, generated inside the creating transaction. It is never shared with estimates or challans.
+- Customer prices are **exclusive** of GST: taxable value = quantity × price.
+- Lines are Finished Goods with an active customer price, one line per product (1 to 100). Each line snapshots the price, the **HSN code** and the **GST rate**. An item without an HSN code or GST rate **blocks** the invoice with a message naming it. There is no silent 5% default for invoices.
+- Optional per-line `batchReference` (up to 100 characters), so a production batch can be referenced later.
+- The invoice snapshots:
+  - the customer's name, billing name, GSTIN, state, contact and billing/shipping addresses
+  - the tax type and the place of supply (the customer's state)
+  - the **seller** details
+- Stock is deducted at creation in one transaction: a conditional `currentStock >= qty` update plus an `invoice_out` StockMovement per line (`referenceType: "invoice"`). A shortage blocks the whole invoice with 409, naming the item and the available quantity.
+- **Edit** (lines, batch references and notes) is allowed **only while no valid payment exists**:
+  - Stock is adjusted by difference (`invoice_out` / `invoice_return`) and the tax is recomputed with the invoice's saved tax type.
+  - Kept lines keep their price, HSN and rate snapshots unless re-priced.
+  - After the first valid payment the invoice is locked; corrections are made by reversal.
+- **Reverse:**
+  - It is never a delete and needs a reason.
+  - It returns all stock with `invoice_return` and records `reversedAt`, `reversedBy` and `reverseReason`.
+  - It is blocked while valid payments exist; void them first. The number stays on record as reversed.
+- **Payments:** the same rules as estimate payments (partial allowed, never above the outstanding balance, date not in the future and not before the invoice date, void in place). They are stored in `InvoicePayment`, a ledger **separate** from estimates.
+- The balance is derived (total − valid payments). The customer's invoice outstanding grows by each invoice total.
+- **Step 11D readiness:** `sourceEstimate` and `sourceEstimateNumber` are reserved on the invoice, and a unique partial index on `sourceEstimate` guarantees one estimate becomes at most one invoice.
+
+**Tax algorithm** (`src/utils/gstInvoice.js` only; the frontend `utils/invoiceTax.js` is a preview mirror):
+
+All amounts are integer paise. A rate becomes basis points (bp): 0.25 → 25, 5 → 500, 18 → 1800. `roundHalfUp(n, d) = floor((2n + d) / 2d)`.
+
+1. Line taxable = quantity × price.
+2. Group the lines by GST rate.
+3. Tax type: customer state `09` → `intra` (CGST + SGST); another valid state → `inter` (IGST); no valid state → blocked.
+4. Per group:
+   - `intra`: each half = `roundHalfUp(taxable × bp, 20000)`, so CGST and SGST are equal.
+   - `inter`: IGST = `roundHalfUp(taxable × bp, 10000)`.
+5. The invoice taxes are the sums of the groups.
+6. exact = taxable + tax; total = `roundHalfUp(exact, 100) × 100` (nearest rupee, 50 paise rounds up); round off = total − exact, always −49..+50 paise.
+7. Invariant: taxable + CGST + SGST + IGST + round off = total. The per-rate summary rows sum exactly to the invoice totals.
+
+Worked examples (all in `test/gst-invoice.test.js`):
+1. 10 × ₹125.50 @ 5%, UP buyer: CGST ₹31.38 + SGST ₹31.38; exact ₹1,317.76; round off +₹0.24; total **₹1,318.00**.
+2. 7 × ₹33.33 @ 5% plus 3 × ₹99.99 @ 18%, UP buyer: 5% group ₹5.83 + ₹5.83; 18% group ₹27.00 + ₹27.00; exact ₹598.94; round off +₹0.06; total **₹599.00**.
+3. The same lines for a Maharashtra buyer: IGST ₹11.67 + ₹53.99; total **₹599.00**. The 5% group's IGST (₹11.67) is one paisa more than its CGST + SGST (₹11.66), because each half is rounded on its own; this is for the accountant to confirm.
+4. 1 × ₹100 @ 0.25%, UP buyer: ₹0.13 + ₹0.13; round off −₹0.26; total **₹100.00**.
+5. 1 × ₹99.50 @ 0%: round off +₹0.50; total **₹100.00**.
+
+**Models:**
+- `Invoice`:
+  - Number and customer: `invoiceNumber`, `financialYear`, `sequence`, `customer`, `customerSnapshot`, `seller` (snapshot).
+  - Date and tax: `invoiceDate`, `taxType intra|inter`, `placeOfSupplyStateCode`.
+  - Lines: `{item, productName, unit, hsnCode, gstRatePercent, quantity, pricePaise, taxablePaise, batchReference}`.
+  - `taxSummary[] {gstRatePercent, taxablePaise, cgstPaise, sgstPaise, igstPaise, taxPaise}`.
+  - Totals: `taxablePaise`, `cgstPaise`, `sgstPaise`, `igstPaise`, `taxTotalPaise`, `roundOffPaise` (−49..50), `totalPaise`, `totalInWords`.
+  - Status and audit: `status active|reversed`, `notes`, `revision`, `createdBy`, `updatedBy`, `reversedAt`, `reversedBy`, `reverseReason`, `sourceEstimate`, `sourceEstimateNumber`, timestamps.
+  - Indexes: unique `invoiceNumber`; `{customer, invoiceDate, _id}`; `{status, invoiceDate, _id}`; `{invoiceDate, _id}`; unique partial `{sourceEstimate}`.
+- `InvoiceCounter`: `{financialYear unique, sequence}`.
+- `InvoicePayment`: the same shape as `EstimatePayment`, with `invoice` and `invoiceNumber`.
+- `StockMovement` adds `invoice_out`, `invoice_return` and referenceType `invoice` (Stock History labels "Invoice Out" and "Invoice Return").
+
+**Seller details** live in `src/config/sellerProfile.js`. It holds public fields only: legal and trade name, address, GSTIN (must start with 09), PAN, phone, email, declaration and signatory label.
+- Creation returns 400 "Seller details are not configured" until the legal name, address, PIN and a valid 09 GSTIN are set.
+- Bank details come only from environment variables (`SELLER_BANK_ACCOUNT_NAME`, `SELLER_BANK_ACCOUNT_NUMBER`, `SELLER_BANK_IFSC`, `SELLER_BANK_NAME`, optional `SELLER_BANK_BRANCH`; names listed in `.env.example`). If any required one is missing, the bank block is omitted.
+- The seller details, bank included, are snapshotted onto each invoice at creation.
+
+**Endpoints** (`/api/invoices`, admin only):
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/seller-status` | `{ configured }` |
+| GET | `/priceable-products` | Active prices with `hsnCode` and `gstRatePercent` (the estimate endpoint's shape is unchanged) |
+| GET | `/` | Paginated (20, max 100). Filters: `customer`, `status`, `from`, `to`, `search` (number). Rows include `taxType`, `paidPaise` and `outstandingPaise` |
+| GET | `/:id` | `{ invoice, payments, summary }` |
+| POST | `/` | `{ customer, invoiceDate, lines:[{item, quantity, batchReference?}], notes }` → 201 |
+| PUT | `/:id` | `{ lines:[{item, quantity, reprice?, batchReference?}], notes }`; 409 when a valid payment exists |
+| POST | `/:id/reverse` | `{ reason }` |
+| POST | `/:id/payments` | `{ amount, paymentDate, method, reference, notes }` → 201 |
+| POST | `/:id/payments/:paymentId/void` | `{ reason }` |
+
+`GET /api/customers/:id/invoice-account` returns `{ activeCount, reversedCount, totalInvoicedPaise, totalPaidPaise, outstandingPaise, paymentCount }`. Customer DELETE also returns 409 when the customer has invoices.
+
+**Shared code with Estimates:**
+- `utils/salesDocuments.js`: numbering, financial year, line, payment and reason validation, paise math, stock difference.
+- `utils/salesTransactions.js`: transaction runner, error mapping, conditional stock deduct/return, movement builder.
+- `utils/priceableProducts.js`.
+- The `DocumentPayments` frontend component.
+
+The estimate routes and helpers were refactored onto these modules with no behaviour change; their existing tests pass unchanged. Transactions and concurrency follow the 11B rules (a revision lock per invoice, conditional stock updates, a counter upsert).
+
+**Frontend:**
+- Invoices list, form and detail pages.
+- The form shows a live tax preview, labelled as a preview.
+- The detail page shows the per-rate tax summary.
+- The print uses `#invoice-print-root` with `body.inv-printing`. It contains: TAX INVOICE, seller, Bill To / Ship To with GSTIN or "Unregistered", lines with HSN and rate, the per-rate summary with HSN codes, totals with round-off, amount in words, the bank block when configured, the declaration and the signatory. A reversed invoice prints a REVERSED banner.
+- The customer detail page has an Invoice Account section.
+
+### Planned (Steps 11D and later)
 
 **Document rules (approved):**
 
 | Document | Stock effect | Tax fields | Ledger |
 |---|---|---|---|
 | Estimate (Built, 11B) | Deducts stock on creation; edit adjusts by difference; cancel returns it | No HSN or GST | Separate Estimate ledger, payments and balance |
-| Invoice | Deducts stock | GST invoice has HSN, GST and customer GSTIN where applicable | Customer Invoice ledger, payments and balance |
+| Invoice (Built, 11C) | Deducts stock on creation; edit (before payment) adjusts by difference; reversal returns it | HSN, GST rate, customer GSTIN, CGST/SGST or IGST | Customer Invoice ledger, payments and balance |
 | Estimate converted to Invoice | No second deduction | Invoice tax fields apply | Reference or transfer must be auditable |
 | Challan | Manual; no stock effect | No GST or GSTIN | No sales or payment balance effect |
 
@@ -581,4 +681,6 @@ These apply to every change. They do not authorize redesigning a working workflo
 8. **`withTransaction` callbacks must be retry-safe.** The driver may run the callback again after a write conflict, so build every per-attempt value (snapshots, movement lists, totals) inside the callback. Never mutate outer state that a retry would double up.
 9. **Serialize per-document money changes with a revision bump.** When several routes change one account (estimate payments, edits, cancel, void), each transaction first bumps the same document (`Estimate.revision`, `SupplierAccountLock`). MongoDB then serializes them, and the retry sees committed data before re-checking caps.
 10. **Movement balances come from the update result.** Use the document returned by the conditional `findOneAndUpdate` for `balanceAfter`, and derive `balanceBefore` from it, never from a read taken earlier in the request.
-11. **Print roots need scoped, more specific selectors.** All page CSS ships in one bundle, so a page's `@media print` rules apply everywhere. `PayoutPage.css` hides every `<body>` child except `#payout-print-root` when printing. New print views use a body class while printing (`body.est-printing`) and selectors such as `html body.est-printing > #estimate-print-root`.
+11. **Print roots need scoped, more specific selectors.** All page CSS ships in one bundle, so a page's `@media print` rules apply everywhere. `PayoutPage.css` hides every `<body>` child except `#payout-print-root` when printing. New print views use a body class while printing (`body.est-printing`, `body.inv-printing`) and selectors such as `html body.est-printing > #estimate-print-root`.
+12. **Tax math lives in one place.** Invoice GST is computed only in `src/utils/gstInvoice.js` and stored on the invoice. The frontend `utils/invoiceTax.js` mirrors it for a labelled preview only, and the saved invoice is always authoritative.
+13. **Seller secrets stay out of source.** Public seller details live in `src/config/sellerProfile.js`. Bank details come from environment variables; only their names are listed in `.env.example`.

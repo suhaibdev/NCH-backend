@@ -7,6 +7,8 @@ const CustomerProductPrice = require('../models/CustomerProductPrice');
 const StockItem = require('../models/StockItem');
 const Estimate = require('../models/Estimate');
 const EstimatePayment = require('../models/EstimatePayment');
+const Invoice = require('../models/Invoice');
+const InvoicePayment = require('../models/InvoicePayment');
 const {
   buildPagedResponse,
   parseOptionalPagination,
@@ -169,6 +171,10 @@ router.delete('/:id', asyncHandler(async (req, res) => {
   if (hasEstimates) {
     return res.status(409).json({ message: 'Customer has estimates. Deactivate instead.' });
   }
+  const hasInvoices = await Invoice.exists({ customer: req.params.id });
+  if (hasInvoices) {
+    return res.status(409).json({ message: 'Customer has invoices. Deactivate instead.' });
+  }
   const customer = await Customer.findByIdAndDelete(req.params.id);
   if (customer) {
     res.json({ message: 'Customer deleted' });
@@ -214,6 +220,47 @@ router.get('/:id/estimate-account', asyncHandler(async (req, res) => {
     totalEstimatedPaise,
     totalPaidPaise,
     outstandingPaise: totalEstimatedPaise - totalPaidPaise,
+    paymentCount: Number(paymentRows[0]?.count || 0),
+  });
+}));
+
+/* ==========================================================
+   CUSTOMER INVOICE ACCOUNT (separate from the estimate ledger)
+   GET /api/customers/:id/invoice-account
+========================================================== */
+
+router.get('/:id/invoice-account', asyncHandler(async (req, res) => {
+  if (!isValidId(req.params.id)) {
+    return res.status(400).json({ message: 'Invalid customer ID.' });
+  }
+  const customerExists = await Customer.exists({ _id: req.params.id });
+  if (!customerExists) {
+    return res.status(404).json({ message: 'Customer not found' });
+  }
+
+  const customerId = new mongoose.Types.ObjectId(req.params.id);
+  const [invoiceRows, paymentRows] = await Promise.all([
+    Invoice.aggregate([
+      { $match: { customer: customerId } },
+      { $group: { _id: '$status', count: { $sum: 1 }, totalPaise: { $sum: '$totalPaise' } } },
+    ]),
+    // Reversed invoices never hold valid payments (reversal requires voiding first).
+    InvoicePayment.aggregate([
+      { $match: { customer: customerId, voided: false } },
+      { $group: { _id: null, paidPaise: { $sum: '$amountPaise' }, count: { $sum: 1 } } },
+    ]),
+  ]);
+
+  const byStatus = new Map(invoiceRows.map((row) => [row._id, row]));
+  const totalInvoicedPaise = Number(byStatus.get('active')?.totalPaise || 0);
+  const totalPaidPaise = Number(paymentRows[0]?.paidPaise || 0);
+
+  return res.json({
+    activeCount: Number(byStatus.get('active')?.count || 0),
+    reversedCount: Number(byStatus.get('reversed')?.count || 0),
+    totalInvoicedPaise,
+    totalPaidPaise,
+    outstandingPaise: totalInvoicedPaise - totalPaidPaise,
     paymentCount: Number(paymentRows[0]?.count || 0),
   });
 }));

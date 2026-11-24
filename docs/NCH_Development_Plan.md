@@ -32,7 +32,7 @@ Continue building the NCH Factory Management System in controlled, testable phas
 | Area | Feature | Status | Notes |
 |---|---|---|---|
 | Core | Authentication | Built | Admin role only |
-| Core | Admin Shell (sidebar, mobile bottom nav) | Built | Order: Dashboard, Products, Attendance, Stock, Factory Flow, Payout, Washers, Suppliers, Customers, Estimates, Employees. Estimates sits in the mobile More sheet. No Stock dropdown. |
+| Core | Admin Shell (sidebar, mobile bottom nav) | Built | Order: Dashboard, Products, Attendance, Stock, Factory Flow, Payout, Washers, Suppliers, Customers, Estimates, Invoices, Employees. Estimates and Invoices sit in the mobile More sheet. No Stock dropdown. |
 | Core | Dashboard | Partial | Month salary and month advance use the IST month; "today" counts still use server-local time |
 | HR | Employees | Built | |
 | HR | Attendance, Bulk | Built | Default hours from `STANDARD_WORK_HOURS = 8`, max 8, `DD/MM/YY` date input |
@@ -54,7 +54,7 @@ Continue building the NCH Factory Management System in controlled, testable phas
 | Stock | Stock Types and Stock Type pages | Built | |
 | Stock | Stock Home (two cards) and Universal Search | Built | |
 | Stock | Structured size and supplier identity | Built | |
-| Stock | Stock History | Partial | Backend endpoints exist; the page is missing |
+| Stock | Stock History | Built | `/admin/stock/history`: paginated, with movement-type, category, search and IST date-range filters (includes Estimate and Invoice movements) |
 | Stock | Products | Partial | Navigation alias to Stock Management; no Product model |
 | Stock | Finished Goods HSN and GST rate | Built | Step 11A. GST rates 0, 0.25, 3, 5, 18, 40 (default 5); edited in Stock Management. A default selling price was dropped by design |
 | Factory | Factory Flow page | Built | Process Goods and Manufacturing cards |
@@ -64,7 +64,7 @@ Continue building the NCH Factory Management System in controlled, testable phas
 | Factory | Manufacturing (create, history, reversal) | Built | Batch duplicate race not closed |
 | Factory | Labels page and printing | Planned | Label is only a Manufacturing input rule today |
 | Sales | Estimates | Built | Step 11B. No GST/HSN; `EST/2026-27/0001` per financial year; stock deducted at creation, edited by difference, returned on cancel; payments with void; print. Conversion to Invoice is Planned (11D) |
-| Sales | Invoices | Planned | |
+| Sales | Invoices | Built | Step 11C. GST tax invoices `INV/2026-27/0001`. Prices exclusive of GST; tax once per rate group; grand total rounded with a round-off line; CGST + SGST for state 09, otherwise IGST. Edit only before payment; reversal; payments with void; print. Blocked until seller details are configured |
 | Sales | Challans | Planned | |
 | Sales | GST report | Planned | |
 | Sales | Orders | Planned | A legacy stub route exists with no caller |
@@ -147,6 +147,8 @@ There is no test runner and no `test` script. The files are plain `assert` scrip
 | `test/customer-validation.test.js` | Customer payload rules (state lock, shipping, phone, email), partial updates on legacy customers |
 | `test/estimates.test.js` | Financial year (31 Mar / 1 Apr), estimate numbers, IST today, paise math, line and payload validation, stock difference on edit, payment cap, void and status rules, no GST/HSN on the model |
 | `test/estimate-session.test.js` | Estimate create, edit, cancel, payment and void routes with fake sessions: shortage blocks with no documents written, one abort and one end per failure, never two operations on one session |
+| `test/gst-invoice.test.js` | Tax type by state code, the five worked tax examples, CGST = SGST halves, round-off range and the .50 boundary, exact reconciliation on 500 random mixed-rate invoices, guards, missing HSN/GST messages, amount in words, `INV` numbering, batch references, seller profile and bank env, Invoice schema |
+| `test/invoice-session.test.js` | Invoice create, edit, reverse, payment and void routes with fake sessions: snapshots and tax, IGST without GSTIN, no-state, missing HSN/GST and seller-not-configured blocks, shortage writes nothing, edit locked after payment, abort and end once, never two operations on one session |
 | `test/washing.test.js` | Washing helpers (paise, size, charge, identity) |
 | `test/washing-session.test.js` | Send and complete transaction handling |
 | `test/manufacturing-session.test.js` | Manufacturing transaction handling |
@@ -205,6 +207,17 @@ Run these against a connected database before a release.
 - The first estimate after 1 April gets `EST/<new FY>/0001`.
 - Print shows no GST or HSN and paginates naturally.
 
+**Invoices (Step 11C, needs live MongoDB and the seller details):**
+- With the seller details still blank, creating an invoice is refused.
+- After the details are filled in, check a UP customer (CGST + SGST) and an out-of-state customer with no GSTIN (IGST).
+- An item with no HSN code or GST rate blocks the invoice with its name.
+- The worked examples from Architecture §15 match the saved invoice, and round-off and total agree with the print.
+- Edit before any payment adjusts stock and tax; after a payment it is refused.
+- Reversal is blocked with a valid payment and works after voiding.
+- Two payments at once cannot exceed the outstanding balance.
+- The first invoice after 1 April gets `INV/<new FY>/0001`.
+- With the bank env variables set, the bank block prints; without them it is omitted.
+
 **Planned features (when built):** Invoice (deducts stock, HSN and GST), conversion without a second deduction, manual Challans with no stock effect, challan quantity caps, GST report from GST invoices only.
 
 **Performance and UX:** paginated APIs return stable pages using their expected indexes; every page navigation shows a loading indicator; every API-backed page has loading, error with retry and empty states; duplicate submit is prevented.
@@ -224,7 +237,7 @@ Run these against a connected database before a release.
 | 7 | Indexes added in code (build on next deploy, not yet verified live): `Attendance {date}`, `Employee {isActive,name}`, `Payout {paidOn,_id}`, `StockItem {stockType,productName}`. Query plans are unverified. | models |
 | 8 | `Customer.stock`, `Customer.orders` and `POST /api/customers/:id/order` are legacy with no caller. Remove them in a cleanup. Existing customers with an invalid stored GST must correct it on their next edit of the GSTIN. | `models/Customer.js`, `routes/customers.js` |
 | 9 | "Products" is only a navigation alias to Stock Management. There is no Product model; Finished Goods carry HSN and GST rate, and prices live per customer. | `AdminShell.jsx` |
-| 10 | The Stock History page is missing although the backend endpoints exist. | `/admin/stock/history` |
+| 10 | Invoices cannot be created until the NCH seller details are filled in, and Finished Goods saved before Step 11A (no stored GST rate) or without an HSN code cannot be invoiced until they are updated in Stock Management. | `src/config/sellerProfile.js`, Stock Management |
 | 11 | **Credential rotation is pending.** A secrets file was committed in earlier history, so those values must be treated as exposed. No values are recorded in these plans. | backend repo |
 
 ### Other known gaps
@@ -247,10 +260,10 @@ Browser behavior at 360/390/430px, tablet and desktop; physical or PDF print out
 
 Order of work (each item follows section 4 before it starts):
 
-1. **Stock History page** (`/admin/stock/history`). Use `GET /api/stock/history`. Filters: product, movement type, start and end date, main category. Columns: date, product, category, movement type, direction, quantity, balance before and after, reference. No movement deletion. Raise the 500-row cap with pagination.
+1. **Stock History page**: Built (`/admin/stock/history`, paginated, with filters). Nothing remaining.
 2. **Backlog hardening** (section 7): month and today in IST, payout edit audit trail, pagination and indexes, split `PayoutPage.jsx`, scope the global button rule, prettier clean-up.
 3. **Labels.** Confirm the label specification first (`NCH_Architecture_Plan.md` section 16), then build the product selector, template, batch and date inputs, preview and PDF or print output.
-4. **Sales documents** (rules in `NCH_Architecture_Plan.md` section 15). Step 11A (customer billing details, customer prices, Finished Goods HSN and GST rate) and Step 11B (Estimates with payments) are built. Next: GST Invoices with one GST calculation on the taxable total and a round-off line (11C), Estimate to Invoice conversion without a second stock deduction (11D), Challans, then the GST report.
+4. **Sales documents** (rules in `NCH_Architecture_Plan.md` section 15). Step 11A (customer billing details, customer prices, Finished Goods HSN and GST rate), Step 11B (Estimates with payments) and Step 11C (GST Invoices with payments) are built. Before invoices go live, fill in `src/config/sellerProfile.js` and set the bank env variables, and get the accountant's sign-off on the rounding. Next: Estimate to Invoice conversion without a second stock deduction (11D), Challans (11E), then the monthly GST report (11F).
 5. **Reports:** inventory by category, low stock, stock movement, raw material consumption, manufacturing, wastage, Finished Goods production, payroll register, attendance summaries, monthly GST report. Build after operational workflows are stable.
 6. **Portals, orders, notifications and dashboard analytics** (`NCH_Architecture_Plan.md` section 17).
 7. **Performance Phase 2.** Only after live timing and query-plan evidence.

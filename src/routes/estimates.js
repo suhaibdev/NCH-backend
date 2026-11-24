@@ -8,18 +8,29 @@
  * inside the withTransaction callback because the driver may retry it.
  */
 const express = require("express");
-const mongoose = require("mongoose");
 
 const Customer = require("../models/Customer");
-const CustomerProductPrice = require("../models/CustomerProductPrice");
 const Estimate = require("../models/Estimate");
 const EstimateCounter = require("../models/EstimateCounter");
 const EstimatePayment = require("../models/EstimatePayment");
-const StockItem = require("../models/StockItem");
 const StockMovement = require("../models/StockMovement");
 const { buildPagedResponse, parseOptionalPagination } = require("../utils/listQuery");
 const { sendServerError } = require("../utils/httpErrors");
 const { parseDateOnly } = require("../utils/supplierAccounting");
+const { findPriceableProducts } = require("../utils/priceableProducts");
+const {
+  actorOf,
+  buildMovement: buildDocumentMovement,
+  deductStock,
+  escapeRegex,
+  loadActivePrice,
+  loadFinishedItem,
+  requestError,
+  returnStock,
+  rupees,
+  runTransaction,
+  sendTransactionError: sendDocumentTransactionError,
+} = require("../utils/salesTransactions");
 const {
   ESTIMATE_STATUSES,
   buildSummary,
@@ -40,46 +51,19 @@ const {
 
 const router = express.Router();
 
-const UNIT_LABELS = { pcs: "PCS", dozen: "Dozen" };
-const unitLabel = (unit) => UNIT_LABELS[unit] || unit;
-const rupees = (paise) => `Rs ${(paise / 100).toFixed(2)}`;
-
-const requestError = (statusCode, message) => Object.assign(new Error(message), { statusCode });
-
-const actorOf = (req) => (req.user?.id ? String(req.user.id) : "Admin");
-
-const escapeRegex = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
-const isConcurrencyError = (err) =>
-  err?.code === 11000 ||
-  err?.code === 112 ||
-  err?.codeName === "WriteConflict" ||
-  Boolean(err?.hasErrorLabel?.("TransientTransactionError"));
+const ESTIMATE_MOVEMENTS = { out: "estimate_out", in: "estimate_return" };
 
 /** Shared error mapping for every transactional route. */
-const sendTransactionError = (res, err, route, message) => {
-  if (err?.statusCode) return res.status(err.statusCode).json({ message: err.message });
-  if (isConcurrencyError(err)) {
-    return res.status(409).json({ message: "Another update is in progress for this estimate. Please retry." });
-  }
-  return sendServerError(res, route, err, message);
-};
+const sendTransactionError = (res, err, route, message) =>
+  sendDocumentTransactionError(
+    res,
+    err,
+    route,
+    message,
+    "Another update is in progress for this estimate. Please retry."
+  );
 
-/** Runs `work(session)` in one transaction; ends the session exactly once. */
-const runTransaction = async (work) => {
-  const session = await mongoose.startSession();
-  try {
-    let result;
-    await session.withTransaction(async () => {
-      result = await work(session);
-    });
-    return result;
-  } finally {
-    await session.endSession();
-  }
-};
-
-/* ---------- shared transactional steps ---------- */
+/* ---------- estimate transactional steps ---------- */
 
 const loadDetail = async (estimateId, session = null) => {
   const estimate = await Estimate.findById(estimateId).session(session).lean();
@@ -115,75 +99,13 @@ const loadValidPayments = (estimateId, session) =>
     .session(session)
     .lean();
 
-const loadActivePrice = (customerId, itemId, session) =>
-  CustomerProductPrice.findOne({ customer: customerId, item: itemId, isActive: true })
-    .select("pricePaise")
-    .session(session)
-    .lean();
-
-const loadFinishedItem = async (itemId, session) => {
-  const item = await StockItem.findById(itemId)
-    .select("productName unit category currentStock")
-    .session(session)
-    .lean();
-  if (!item) throw requestError(404, "A selected product was not found.");
-  if (item.category !== "finished_goods") {
-    throw requestError(400, `${item.productName} is not a Finished Goods product.`);
-  }
-  return item;
-};
-
-/** Conditional deduction: never lets stock go below zero. */
-const deductStock = async (itemId, quantity, productName, session) => {
-  const updated = await StockItem.findOneAndUpdate(
-    { _id: itemId, category: "finished_goods", currentStock: { $gte: quantity } },
-    { $inc: { currentStock: -quantity } },
-    { new: true, runValidators: true, session }
-  );
-  if (updated) return updated;
-
-  const current = await StockItem.findById(itemId)
-    .select("productName unit currentStock")
-    .session(session)
-    .lean();
-  if (!current) throw requestError(404, `${productName} was not found.`);
-  throw requestError(
-    409,
-    `Insufficient stock for ${current.productName}. Available ${current.currentStock} ${unitLabel(
-      current.unit
-    )}, required ${quantity} ${unitLabel(current.unit)}.`
-  );
-};
-
-const returnStock = async (itemId, quantity, productName, session) => {
-  const updated = await StockItem.findOneAndUpdate(
-    { _id: itemId },
-    { $inc: { currentStock: quantity } },
-    { new: true, runValidators: true, session }
-  );
-  if (!updated) throw requestError(409, `${productName} no longer exists; stock cannot be returned.`);
-  return updated;
-};
-
-const buildMovement = ({ line, updatedItem, direction, quantity, estimate, reason, actor }) => ({
-  item: line.item,
-  productName: line.productName,
-  category: "finished_goods",
-  stockType: updatedItem.stockType || null,
-  unit: line.unit,
-  direction,
-  movementType: direction === "out" ? "estimate_out" : "estimate_return",
-  quantity,
-  balanceBefore:
-    direction === "out" ? updatedItem.currentStock + quantity : updatedItem.currentStock - quantity,
-  balanceAfter: updatedItem.currentStock,
-  reason: reason.slice(0, 250),
-  notes: "",
-  referenceType: "estimate",
-  referenceId: estimate._id,
-  movementDate: new Date(),
-  createdBy: actor,
-});
+const buildMovement = ({ estimate, ...rest }) =>
+  buildDocumentMovement({
+    ...rest,
+    referenceType: "estimate",
+    referenceId: estimate._id,
+    movementTypes: ESTIMATE_MOVEMENTS,
+  });
 
 /* ==========================================================
    PRICEABLE PRODUCTS (for the estimate form)
@@ -202,50 +124,9 @@ router.get("/priceable-products", async (req, res) => {
       { page: req.query.page ?? 1, limit: req.query.limit },
       { cap: 100, maxLimit: 100, defaultLimit: 20 }
     );
-
-    const itemMatch = { "itemDoc.category": "finished_goods" };
     const search = typeof req.query.search === "string" ? req.query.search.trim() : "";
-    if (search) itemMatch["itemDoc.productName"] = { $regex: escapeRegex(search), $options: "i" };
 
-    const [result] = await CustomerProductPrice.aggregate([
-      { $match: { customer: new mongoose.Types.ObjectId(customerId), isActive: true } },
-      {
-        $lookup: {
-          from: StockItem.collection.name,
-          localField: "item",
-          foreignField: "_id",
-          as: "itemDoc",
-        },
-      },
-      { $unwind: "$itemDoc" },
-      { $match: itemMatch },
-      { $sort: { "itemDoc.productName": 1, _id: 1 } },
-      {
-        $facet: {
-          items: [
-            { $skip: paging.skip },
-            { $limit: paging.limit },
-            {
-              $project: {
-                _id: 0,
-                pricePaise: 1,
-                item: {
-                  _id: "$itemDoc._id",
-                  productName: "$itemDoc.productName",
-                  unit: "$itemDoc.unit",
-                  currentStock: "$itemDoc.currentStock",
-                },
-              },
-            },
-          ],
-          total: [{ $count: "count" }],
-        },
-      },
-    ]);
-
-    return res.json(
-      buildPagedResponse(result?.items || [], paging, result?.total?.[0]?.count || 0)
-    );
+    return res.json(await findPriceableProducts(customerId, { search, paging }));
   } catch (err) {
     return sendServerError(res, "ESTIMATE PRODUCTS", err, "Unable to load priced products.");
   }
