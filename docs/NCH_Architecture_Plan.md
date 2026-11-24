@@ -76,7 +76,8 @@ Admin  →  React frontend  →  Axios / REST  →  Express backend  →  Mongoo
 | Washers, Process Goods, Washer advances and payouts | Built |
 | Manufacturing (create, history, reversal) | Built |
 | Products | Partial (a navigation alias to Stock Management; no Product model) |
-| Estimates, Invoices, Challans, GST report | Planned |
+| Estimates (create, edit, cancel, payments, print) | Built (11B) |
+| Invoices, Challans, Estimate to Invoice conversion, GST report | Planned |
 | Labels page and label printing | Planned (Label exists only as a Manufacturing input rule) |
 | Portals, Orders, Notifications | Planned |
 
@@ -89,10 +90,11 @@ src/
 ├── App.jsx  index.jsx
 ├── components/   AdminLayout  AdminShell(.css)  Navbar(.css)  ProtectedRoute
 ├── config/       api.js  auth.js  axios.js
-├── utils/        businessDate.js  gst.js  text.js  washerPayoutCycle.js
+├── utils/        businessDate.js  estimates.js  gst.js  text.js  washerPayoutCycle.js
 └── pages/
     ├── AdminCommon.css  AdminPortalPage  FactoryFlowPage  HomePage  Hero  Login  Products
     ├── Customer/    CustomersPage  CustomerDetailPage
+    ├── Estimates/   EstimatesPage  EstimateFormPage  EstimateDetailPage  EstimatePrint
     ├── Employees/   EmployeesPage  Attendance  PayoutPage  SalarySlip
     ├── Suppliers/   SuppliersPage  SupplierDetailPage  ReceiveMaterialPage
     └── Stock/       StockHomePage  StockPage  StockTypesPage  StockTypeProductsPage
@@ -103,7 +105,7 @@ src/
 
 `pages/Products.jsx` is a public marketing section on the home page; it is not the admin Products item. `WasherDetailFixed.jsx` is the live route for washer master data and rates; the name is legacy. There is no `StockHistoryPage`, `LabelsPage` or `WashingPage`.
 
-Backend: `index.js`; `src/routes/` (14 route files), `src/models/` (24 models), `src/middleware/` (auth, role, database readiness), `src/utils/` (helpers listed per feature below), `test/` (plain Node assert scripts, see Development Plan section 6).
+Backend: `index.js`; `src/routes/` (15 route files), `src/models/` (27 models), `src/middleware/` (auth, role, database readiness), `src/utils/` (helpers listed per feature below), `test/` (plain Node assert scripts, see Development Plan section 6).
 
 ## 5. Routes and navigation
 
@@ -116,7 +118,11 @@ Backend: `index.js`; `src/routes/` (14 route files), `src/models/` (24 models), 
 /admin/payout
 /admin/salary-slip                              (data only through router state)
 /admin/customers
-/admin/customers/:customerId                    details, Products and Prices
+/admin/customers/:customerId                    details, Estimate Account, Products and Prices
+/admin/estimates                                list (filters sync to the URL, e.g. ?customer=)
+/admin/estimates/new                            create (?customer= preselects)
+/admin/estimates/:estimateId                    detail, payments, cancel, print
+/admin/estimates/:estimateId/edit               edit lines and notes
 /admin/suppliers
 /admin/suppliers/:supplierId
 /admin/suppliers/:supplierId/receive
@@ -142,7 +148,6 @@ Legacy redirects: `/employees`, `/customers`, `/employees/attendance`, `/employe
 ```text
 /admin/stock/history     complete stock movement history
 /admin/labels            label generation and printing
-/admin/estimates
 /admin/invoices
 /admin/challans
 /admin/reports/gst
@@ -152,9 +157,9 @@ Legacy redirects: `/employees`, `/customers`, `/employees/attendance`, `/employe
 
 All admin routes render through one responsive `AdminShell`. The public `Navbar` is used only on the public home page.
 
-- **Desktop:** a fixed, collapsible dark-navy sidebar. Order: **Dashboard, Products, Attendance, Stock, Factory Flow, Payout, Washers, Suppliers, Customers, Employees.** Logout is a separate button at the bottom. There is no Stock dropdown. Products opens `/admin/stock/manage`.
+- **Desktop:** a fixed, collapsible dark-navy sidebar. Order: **Dashboard, Products, Attendance, Stock, Factory Flow, Payout, Washers, Suppliers, Customers, Estimates, Employees.** Logout is a separate button at the bottom. There is no Stock dropdown. Products opens `/admin/stock/manage`.
 - **Brand:** `NCH` with `NEW CALCUTTA HANDLOOM` beneath it. The Admin identity shows at the right. There is no notification bell and no profile menu.
-- **Mobile:** a compact brand header plus a fixed bottom bar: **Home, Attendance, Stock, More.** The More sheet holds Products, Factory Flow, Payout, Washers, Suppliers, Customers, Employees and Logout.
+- **Mobile:** a compact brand header plus a fixed bottom bar: **Home, Attendance, Stock, More.** The More sheet holds Products, Factory Flow, Payout, Washers, Suppliers, Customers, Estimates, Employees and Logout.
 - **Collapsed rail:** centered `NCH` row, then the centered chevron toggle below it.
 - The shell makes no startup data requests. Responsive padding and bottom-bar clearance come from the shell.
 
@@ -426,13 +431,77 @@ Hard and permanent. `DELETE /api/payout/:id` and `DELETE /api/payout/bulk/:id` e
 
 **Frontend:** `/admin/customers` has the sectioned form (GSTIN auto-fills and locks the state), a status filter and whole-row click to `/admin/customers/:customerId`. The detail page shows the customer details and a Products and Prices section: add a product from a Finished Goods search, set the price in rupees, edit it inline, deactivate or reactivate it, 20 rows per page.
 
-### Planned (Steps 11B and later)
+### Built in Step 11B: Estimates
+
+**Final rules (approved):**
+- An Estimate has **no GST and no HSN** anywhere (model, API, UI, print).
+- Number `EST/2026-27/0001`: its own counter per financial year (April to March), taken from the estimate date and generated inside the creating transaction. It is never shared with invoices or challans.
+- Lines are Finished Goods with an **active** `CustomerProductPrice` for that customer, one line per product (1 to 100 lines). Quantity is a whole number from 1 to 100,000 in the item's unit, with no PCS/Dozen conversion. The price, product name and unit are **snapshotted** on the line.
+- The estimate date is a date-only value (default IST today, never in the future; backdating allowed). The customer and the date are fixed after creation.
+- **Stock is deducted at creation** in one transaction, with a conditional update (`currentStock >= qty`) and one permanent `estimate_out` StockMovement per line (`referenceType: "estimate"`). A shortage blocks the whole estimate with 409, naming the item and the available quantity.
+- **Edit** (lines and notes only) adjusts stock **by difference** per product: an increase deducts with `estimate_out`, while a decrease or a removed line returns stock with `estimate_return`.
+  - A kept line keeps its price snapshot unless it is sent with `reprice: true`, which takes the current active price.
+  - New lines use the current active price.
+  - An edit that would make the total less than the valid payments is blocked (409).
+- **Cancel** is a reversal, never a delete. It needs a reason, returns every line with `estimate_return`, and records the cancel date, user and reason. It is **blocked while any non-voided payment exists**: the admin voids payments first, so a refund decision is never hidden inside a stock operation, and a cancelled estimate never holds valid payments.
+- **Payments** (`EstimatePayment`):
+  - Recorded by an admin, partial payments allowed, integer paise.
+  - The payment date is not in the future and not before the estimate date.
+  - Method is cash, upi, bank_transfer, cheque or other, with an optional reference and notes.
+  - A payment can never exceed the outstanding balance.
+- **Voiding** is final and in place: `voided`, `voidedAt`, `voidedBy` and `voidReason` are set, and the amount, date and method never change. Nothing is deleted. To correct an amount, void the payment and record a new one.
+- The **balance is derived** (total minus non-voided payments) and is never stored or edited.
+- The estimate ledger is **separate** from the future invoice ledger. Totals and balances are never mixed.
+- Conversion to an Invoice is **not built** (Step 11D). The model reserves status `converted`, `convertedInvoice` and `convertedAt`, so conversion can link an invoice without a second stock deduction.
+
+**Models:**
+- `Estimate`:
+  - Fields: `estimateNumber`, `financialYear`, `sequence`, `customer`, `customerSnapshot {name, billingName, contactNumber, stateCode, billingAddress}`, `estimateDate`, `lines[] {item, productName, unit, quantity, pricePaise, lineTotalPaise}`, `totalPaise`, `status active|cancelled|converted`, `notes`, `revision`, `createdBy`, `updatedBy`, `cancelledAt`, `cancelledBy`, `cancelReason`, `convertedInvoice`, `convertedAt`, timestamps.
+  - Indexes: unique `estimateNumber`; `{customer, estimateDate, _id}`; `{status, estimateDate, _id}`; `{estimateDate, _id}`.
+- `EstimateCounter`: `{financialYear unique, sequence}`.
+- `EstimatePayment`:
+  - Fields: `estimate`, `customer`, `estimateNumber`, `amountPaise`, `paymentDate`, `method`, `reference`, `notes`, `createdBy`, `voided`, `voidedAt`, `voidedBy`, `voidReason`.
+  - Indexes: `{estimate, paymentDate, createdAt}` and `{customer, voided}`.
+- `StockMovement` enums gain `estimate_out`, `estimate_return` and referenceType `estimate`. The Stock History labels are "Estimate Out" and "Estimate Return".
+
+**Endpoints** (`/api/estimates`, admin only; helpers in `utils/estimates.js`):
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/priceable-products?customer=&search=&page=&limit=` | Active prices for Finished Goods with available stock, for the form |
+| GET | `/` | Always paginated (20, max 100). Filters: `customer`, `status`, `from`, `to`, `search` (number). Rows include `paidPaise` and `outstandingPaise` |
+| GET | `/:id` | `{ estimate, payments (voided included), summary {totalPaise, paidPaise, outstandingPaise, paymentCount, voidedCount} }` |
+| POST | `/` | `{ customer, estimateDate, lines:[{item, quantity}], notes }` → 201 with the detail shape |
+| PUT | `/:id` | `{ lines:[{item, quantity, reprice?}], notes }`; customer and date are rejected |
+| POST | `/:id/cancel` | `{ reason }` |
+| POST | `/:id/payments` | `{ amount (rupees), paymentDate, method, reference, notes }` → 201 |
+| POST | `/:id/payments/:paymentId/void` | `{ reason }`; 409 when already voided |
+
+`GET /api/customers/:id/estimate-account` returns `{ activeCount, cancelledCount, totalEstimatedPaise, totalPaidPaise, outstandingPaise, paymentCount }` from two aggregations. Customer DELETE now also returns 409 when the customer has estimates.
+
+**Transactions and concurrency:**
+- Payloads and ids are validated before the session opens. Every write runs inside `session.withTransaction`, with session operations awaited one at a time. The session is ended once in `finally`.
+- Edit, cancel, payment and void first lock the estimate by bumping `revision` on an active estimate. That serializes them per estimate, so two racing payments cannot exceed the outstanding balance, and a payment cannot race a cancel or an edit that lowers the total.
+- Two estimates racing for the last stock conflict on the StockItem document. The loser is retried by the driver, fails the `$gte` filter, and returns 409 with nothing persisted.
+- `balanceBefore` and `balanceAfter` on movements come from the conditional update's result, never from an earlier read.
+- Write conflicts, TransientTransactionError and 11000 that remain after retries return 409 "please retry".
+
+**Frontend:**
+- `pages/Estimates/` holds `EstimatesPage` (list), `EstimateFormPage` (create and edit), `EstimateDetailPage` and `EstimatePrint`.
+- **Print:**
+  - It portals `#estimate-print-root` into `<body>` and sets `body.est-printing` while printing.
+  - It is text only and comes from the saved snapshot only.
+  - It shows the total, paid to date and balance. A cancelled estimate prints a CANCELLED line.
+  - The table header repeats and rows avoid page breaks.
+- The customer detail page has an Estimate Account section with links to the list (filtered) and to New Estimate.
+
+### Planned (Steps 11C and later)
 
 **Document rules (approved):**
 
 | Document | Stock effect | Tax fields | Ledger |
 |---|---|---|---|
-| Estimate | Deducts or reserves stock on creation | No HSN or GST | Separate Estimate ledger, payments and balance |
+| Estimate (Built, 11B) | Deducts stock on creation; edit adjusts by difference; cancel returns it | No HSN or GST | Separate Estimate ledger, payments and balance |
 | Invoice | Deducts stock | GST invoice has HSN, GST and customer GSTIN where applicable | Customer Invoice ledger, payments and balance |
 | Estimate converted to Invoice | No second deduction | Invoice tax fields apply | Reference or transfer must be auditable |
 | Challan | Manual; no stock effect | No GST or GSTIN | No sales or payment balance effect |
@@ -509,3 +578,7 @@ These apply to every change. They do not authorize redesigning a working workflo
 5. **Date-only comparisons must not depend on the server time zone.** Compare `YYYY-MM-DD` day keys (attendance and payouts use shared helpers; business "today" uses `Asia/Kolkata`) instead of local-time `Date` arithmetic. Local-time helpers are correct only when the server runs in UTC.
 6. **Rsbuild exposes only `PUBLIC_` environment variables** to the browser. Anything else is invisible there, and `import.meta.env.VITE_*` does not apply.
 7. **`.env` is never tracked.** Commit only `.env.example`. A value that was ever committed counts as exposed and must be rotated.
+8. **`withTransaction` callbacks must be retry-safe.** The driver may run the callback again after a write conflict, so build every per-attempt value (snapshots, movement lists, totals) inside the callback. Never mutate outer state that a retry would double up.
+9. **Serialize per-document money changes with a revision bump.** When several routes change one account (estimate payments, edits, cancel, void), each transaction first bumps the same document (`Estimate.revision`, `SupplierAccountLock`). MongoDB then serializes them, and the retry sees committed data before re-checking caps.
+10. **Movement balances come from the update result.** Use the document returned by the conditional `findOneAndUpdate` for `balanceAfter`, and derive `balanceBefore` from it, never from a read taken earlier in the request.
+11. **Print roots need scoped, more specific selectors.** All page CSS ships in one bundle, so a page's `@media print` rules apply everywhere. `PayoutPage.css` hides every `<body>` child except `#payout-print-root` when printing. New print views use a body class while printing (`body.est-printing`) and selectors such as `html body.est-printing > #estimate-print-root`.

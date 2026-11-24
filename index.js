@@ -25,6 +25,7 @@ app.use(express.json());
 // Import routes
 const employeeRoutes = require("./src/routes/employees");
 const customerRoutes = require("./src/routes/customers");
+const estimateRoutes = require("./src/routes/estimates");
 const supplierRoutes = require("./src/routes/suppliers");
 const materialReceiptRoutes = require("./src/routes/materialReceipts");
 const supplierPaymentRoutes = require("./src/routes/supplierPayments");
@@ -59,6 +60,7 @@ app.use("/api/auth", authRoutes);
 app.use("/api/dashboard", verifyToken, authorizeRoles("admin"), dashboardRoutes);
 app.use("/api/employees", verifyToken, authorizeRoles("admin"), employeeRoutes);
 app.use("/api/customers", verifyToken, authorizeRoles("admin"), customerRoutes);
+app.use("/api/estimates", verifyToken, authorizeRoles("admin"), estimateRoutes);
 app.use("/api/suppliers", verifyToken, authorizeRoles("admin"), supplierRoutes);
 app.use("/api/material-receipts", verifyToken, authorizeRoles("admin"), materialReceiptRoutes);
 app.use("/api/supplier-payments", verifyToken, authorizeRoles("admin"), supplierPaymentRoutes);

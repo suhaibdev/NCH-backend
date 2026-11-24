@@ -93,6 +93,9 @@ const stockMovementSchema =
           "manufacturing_reverse_in",
           "manufacturing_reverse_out",
 
+          "estimate_out",
+          "estimate_return",
+
           "adjustment",
         ],
       },
@@ -148,6 +151,7 @@ const stockMovementSchema =
           "manufacturing",
           "manual",
           "material_receipt",
+          "estimate",
         ],
         default: "",
       },

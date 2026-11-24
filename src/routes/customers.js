@@ -5,6 +5,8 @@ const router = express.Router();
 const Customer = require('../models/Customer');
 const CustomerProductPrice = require('../models/CustomerProductPrice');
 const StockItem = require('../models/StockItem');
+const Estimate = require('../models/Estimate');
+const EstimatePayment = require('../models/EstimatePayment');
 const {
   buildPagedResponse,
   parseOptionalPagination,
@@ -163,12 +165,57 @@ router.delete('/:id', asyncHandler(async (req, res) => {
   if (hasPrices) {
     return res.status(409).json({ message: 'Customer has product prices. Deactivate instead.' });
   }
+  const hasEstimates = await Estimate.exists({ customer: req.params.id });
+  if (hasEstimates) {
+    return res.status(409).json({ message: 'Customer has estimates. Deactivate instead.' });
+  }
   const customer = await Customer.findByIdAndDelete(req.params.id);
   if (customer) {
     res.json({ message: 'Customer deleted' });
   } else {
     res.status(404).json({ message: 'Customer not found' });
   }
+}));
+
+/* ==========================================================
+   CUSTOMER ESTIMATE ACCOUNT (separate from any invoice ledger)
+   GET /api/customers/:id/estimate-account
+========================================================== */
+
+router.get('/:id/estimate-account', asyncHandler(async (req, res) => {
+  if (!isValidId(req.params.id)) {
+    return res.status(400).json({ message: 'Invalid customer ID.' });
+  }
+  const customerExists = await Customer.exists({ _id: req.params.id });
+  if (!customerExists) {
+    return res.status(404).json({ message: 'Customer not found' });
+  }
+
+  const customerId = new mongoose.Types.ObjectId(req.params.id);
+  const [estimateRows, paymentRows] = await Promise.all([
+    Estimate.aggregate([
+      { $match: { customer: customerId } },
+      { $group: { _id: '$status', count: { $sum: 1 }, totalPaise: { $sum: '$totalPaise' } } },
+    ]),
+    // Cancelled estimates never hold valid payments (cancel requires voiding first).
+    EstimatePayment.aggregate([
+      { $match: { customer: customerId, voided: false } },
+      { $group: { _id: null, paidPaise: { $sum: '$amountPaise' }, count: { $sum: 1 } } },
+    ]),
+  ]);
+
+  const byStatus = new Map(estimateRows.map((row) => [row._id, row]));
+  const totalEstimatedPaise = Number(byStatus.get('active')?.totalPaise || 0);
+  const totalPaidPaise = Number(paymentRows[0]?.paidPaise || 0);
+
+  return res.json({
+    activeCount: Number(byStatus.get('active')?.count || 0),
+    cancelledCount: Number(byStatus.get('cancelled')?.count || 0),
+    totalEstimatedPaise,
+    totalPaidPaise,
+    outstandingPaise: totalEstimatedPaise - totalPaidPaise,
+    paymentCount: Number(paymentRows[0]?.count || 0),
+  });
 }));
 
 /* ==========================================================

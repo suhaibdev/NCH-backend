@@ -32,7 +32,7 @@ Continue building the NCH Factory Management System in controlled, testable phas
 | Area | Feature | Status | Notes |
 |---|---|---|---|
 | Core | Authentication | Built | Admin role only |
-| Core | Admin Shell (sidebar, mobile bottom nav) | Built | Order: Dashboard, Products, Attendance, Stock, Factory Flow, Payout, Washers, Suppliers, Customers, Employees. No Stock dropdown. |
+| Core | Admin Shell (sidebar, mobile bottom nav) | Built | Order: Dashboard, Products, Attendance, Stock, Factory Flow, Payout, Washers, Suppliers, Customers, Estimates, Employees. Estimates sits in the mobile More sheet. No Stock dropdown. |
 | Core | Dashboard | Partial | Month salary and month advance use the IST month; "today" counts still use server-local time |
 | HR | Employees | Built | |
 | HR | Attendance, Bulk | Built | Default hours from `STANDARD_WORK_HOURS = 8`, max 8, `DD/MM/YY` date input |
@@ -63,7 +63,7 @@ Continue building the NCH Factory Management System in controlled, testable phas
 | Factory | Washer advances, payouts, slips | Built | |
 | Factory | Manufacturing (create, history, reversal) | Built | Batch duplicate race not closed |
 | Factory | Labels page and printing | Planned | Label is only a Manufacturing input rule today |
-| Sales | Estimates | Planned | |
+| Sales | Estimates | Built | Step 11B. No GST/HSN; `EST/2026-27/0001` per financial year; stock deducted at creation, edited by difference, returned on cancel; payments with void; print. Conversion to Invoice is Planned (11D) |
 | Sales | Invoices | Planned | |
 | Sales | Challans | Planned | |
 | Sales | GST report | Planned | |
@@ -145,6 +145,8 @@ There is no test runner and no `test` script. The files are plain `assert` scrip
 | `test/customer-gst.test.js` | GSTIN, GSTIN to state code, state code list, GST rates, HSN, Finished-Goods-only tax metadata |
 | `test/customer-pricing.test.js` | Rupees and paise conversion, price limits, Finished-Goods-only assignment, price schema and unique index |
 | `test/customer-validation.test.js` | Customer payload rules (state lock, shipping, phone, email), partial updates on legacy customers |
+| `test/estimates.test.js` | Financial year (31 Mar / 1 Apr), estimate numbers, IST today, paise math, line and payload validation, stock difference on edit, payment cap, void and status rules, no GST/HSN on the model |
+| `test/estimate-session.test.js` | Estimate create, edit, cancel, payment and void routes with fake sessions: shortage blocks with no documents written, one abort and one end per failure, never two operations on one session |
 | `test/washing.test.js` | Washing helpers (paise, size, charge, identity) |
 | `test/washing-session.test.js` | Send and complete transaction handling |
 | `test/manufacturing-session.test.js` | Manufacturing transaction handling |
@@ -194,7 +196,16 @@ Run these against a connected database before a release.
 
 **Customer pricing (Step 11A, needs live MongoDB):** create customers with and without a GSTIN; a state that does not match the GSTIN is rejected; a legacy customer can be deactivated without fixing old fields; assign, update, deactivate and reactivate a price; two simultaneous assignments of the same product end as one row; a non-Finished-Goods item is rejected; customer delete returns 409 once prices exist; moving a priced item out of Finished Goods returns 409.
 
-**Planned features (when built):** Estimate (deducts stock, no HSN or GST), Invoice (deducts stock, HSN and GST), conversion without a second deduction, manual Challans with no stock effect, challan quantity caps, GST report from GST invoices only.
+**Estimates (Step 11B, needs live MongoDB):**
+- Create an estimate and check the stock and the two Stock History rows ("Estimate Out").
+- Two browser tabs racing for the last units: one succeeds, the other gets 409 and the stock never goes negative.
+- Edit: increase, decrease, remove and add lines, checking the movements by difference; re-price a kept line; editing below the amount paid is blocked.
+- Cancel is blocked with a valid payment and works after voiding it, returning all stock.
+- Two payments at once cannot exceed the outstanding balance; a payment dated before the estimate or in the future is rejected.
+- The first estimate after 1 April gets `EST/<new FY>/0001`.
+- Print shows no GST or HSN and paginates naturally.
+
+**Planned features (when built):** Invoice (deducts stock, HSN and GST), conversion without a second deduction, manual Challans with no stock effect, challan quantity caps, GST report from GST invoices only.
 
 **Performance and UX:** paginated APIs return stable pages using their expected indexes; every page navigation shows a loading indicator; every API-backed page has loading, error with retry and empty states; duplicate submit is prevented.
 
@@ -239,7 +250,7 @@ Order of work (each item follows section 4 before it starts):
 1. **Stock History page** (`/admin/stock/history`). Use `GET /api/stock/history`. Filters: product, movement type, start and end date, main category. Columns: date, product, category, movement type, direction, quantity, balance before and after, reference. No movement deletion. Raise the 500-row cap with pagination.
 2. **Backlog hardening** (section 7): month and today in IST, payout edit audit trail, pagination and indexes, split `PayoutPage.jsx`, scope the global button rule, prettier clean-up.
 3. **Labels.** Confirm the label specification first (`NCH_Architecture_Plan.md` section 16), then build the product selector, template, batch and date inputs, preview and PDF or print output.
-4. **Sales documents** (rules in `NCH_Architecture_Plan.md` section 15). Step 11A (customer billing details, customer prices, Finished Goods HSN and GST rate) is built. Next: Estimates, GST Invoices with one GST calculation on the taxable total and a round-off line (11C), Challans, separate number series, then the GST report.
+4. **Sales documents** (rules in `NCH_Architecture_Plan.md` section 15). Step 11A (customer billing details, customer prices, Finished Goods HSN and GST rate) and Step 11B (Estimates with payments) are built. Next: GST Invoices with one GST calculation on the taxable total and a round-off line (11C), Estimate to Invoice conversion without a second stock deduction (11D), Challans, then the GST report.
 5. **Reports:** inventory by category, low stock, stock movement, raw material consumption, manufacturing, wastage, Finished Goods production, payroll register, attendance summaries, monthly GST report. Build after operational workflows are stable.
 6. **Portals, orders, notifications and dashboard analytics** (`NCH_Architecture_Plan.md` section 17).
 7. **Performance Phase 2.** Only after live timing and query-plan evidence.
