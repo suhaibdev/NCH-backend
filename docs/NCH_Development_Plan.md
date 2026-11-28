@@ -14,6 +14,7 @@ This file holds delivery status, working rules, the test inventory, the backlog 
 8. Roadmap
 9. Deployment workflow
 10. Handoff instructions
+11. Decisions log
 
 ---
 
@@ -68,11 +69,20 @@ Continue building the NCH Factory Management System in controlled, testable phas
 | Sales | Invoices | Built | Step 11C. GST tax invoices `INV/2026-27/0001`. Prices exclusive of GST; tax once per rate group; grand total rounded with a round-off line; CGST + SGST for state 09, otherwise IGST. Edit only before payment; reversal; payments with void; print. Blocked until seller details are configured |
 | Sales | Delivery Challans | Built | Step 11E. Invoice-only; no GST, prices, stock or ledger effect; `CH/2026-27/0001` series; partial dispatch capped per invoice line; cancel frees the quantity; edit is transport and notes only; invoice reverse and edit are blocked while challans are active; print |
 | Sales | Monthly GST report | Built | Step 11F. GST invoices only, from saved snapshots, aggregated on the server; month, FY or a custom range of up to 366 days; reversed invoices excluded and listed with a reversed-after-period flag; rate, B2B/B2C, HSN (tax apportioned) and register; reconciliation check; CSV only (BOM, formula-safe, capped at 5,000 invoices). Not a GSTR-1 layout |
-| Sales | Orders | Planned | A legacy stub route exists with no caller |
-| Platform | Portals (customer, supplier) | Planned | |
-| Platform | Notifications, WhatsApp | Planned | |
-| Platform | Dashboard analytics | Planned | |
+| Sales | Orders | Planned | PLANNED, step 16: approval flow; approval creates a draft invoice only. A legacy stub route exists with no caller |
+| Platform | Portals (customer, supplier) | Planned | Customer: PLANNED, steps 16 and 17. Supplier: LATER, view-only proposal |
+| Platform | Notifications, WhatsApp | Planned | Notifications: PLANNED, from step 14. WhatsApp: LATER |
+| Platform | Dashboard analytics | Planned | Older proposal, not confirmed. The step 13 dashboard cards are to be finalised |
 | Platform | Performance Round 1 (caps, optional pagination, indexes, bounded payout previews) | Built | Static checks only; needs live MongoDB timing and `explain()` evidence. Create, edit and delete payout routes and `GET /stock/history` are still unbounded or full-history |
+| Platform | Security basics, audit log, ownership helper, hidden admin path | PLANNED | Step 12 |
+| Platform | Design system and shell (navy, dark mode, grouped sidebar, logins, password banner, dashboard) | PLANNED | Step 13 |
+| Public | Website (Home, Quality, Enquiry), Enquiries inbox, admin Notifications | PLANNED | Step 14, with anti-spam |
+| Sales | Settings and final invoice (draft, preview, generate, 48-hour edit history, required Batch No.) | PLANNED | Step 15 |
+| Customers | Customer accounts | PLANNED | Step 16 |
+| Sales | Shipments (replaces Delivery Challans) | PLANNED | Step 16. Challan code is removed only after confirming the collection is empty |
+| Customers | Customer Billing | PLANNED | Step 17 |
+| Public | Website Products admin | PLANNED | Step 18 |
+| Platform | Admin two-factor | PLANNED | Step 19 |
 
 ## 3. Development rules
 
@@ -256,7 +266,7 @@ Run these against a connected database before a release.
 - Void the carried payments, then reverse the invoice: stock returns once and the estimate stays converted.
 - At 0% GST with a payment that is a few paise more than the rounded total, conversion is blocked.
 
-**Planned features (when built):** Invoice (deducts stock, HSN and GST), conversion without a second deduction, manual Challans with no stock effect, challan quantity caps, GST report from GST invoices only.
+**PLANNED features:** live checks for steps 12 to 19 are in section 8. The Step 11A-11E checks above describe today's behaviour; steps 15 and 16 will change the invoice and challan checks.
 
 **Performance and UX:** paginated APIs return stable pages using their expected indexes; every page navigation shows a loading indicator; every API-backed page has loading, error with retry and empty states; duplicate submit is prevented.
 
@@ -290,21 +300,123 @@ Run these against a connected database before a release.
 - Two overlapping washer directory views (`WashersPage`, `WashersListPage`).
 - Legacy per-employee payment-method control on the desktop Bulk Payout table, and the creation form sitting after history in the DOM (ordered visually with CSS).
 
+### Open items before go-live
+
+- [ ] Credential rotation (record no values here):
+  - [ ] Atlas password
+  - [ ] Render `MONGODB_URI` and `JWT_SECRET`
+  - [ ] Admin password
+  - [ ] Atlas network access
+  - [ ] Repository privacy
+- [ ] Real logo
+- [ ] Licence number
+- [ ] Seller profile and bank details entered in Settings (Settings is built in step 15)
+- [ ] HSN code and GST rate on every Finished Goods product
+- [ ] Accountant sign-off (one-total GST method, round-off, HSN apportioning)
+- [ ] Live checks for steps 11A to 11F (section 6)
+
 ### Not verified live
 
 Browser behavior at 360/390/430px, tablet and desktop; physical or PDF print output (payout, washer slip); authenticated API calls against a deployed backend; MongoDB transactions, rollback and concurrency on the deployed topology; the deployed server time zone; query plans for the declared indexes; Render and Vercel environment variables.
 
 ## 8. Roadmap
 
-Order of work (each item follows section 4 before it starts):
+All steps are **PLANNED**. Each follows section 4 before it starts. Rules are in `NCH_Architecture_Plan.md` and `NCH_Design_Decisions.md`. Models follow section 5. The live checks below need a deployed or connected environment.
 
-1. **Stock History page**: Built (`/admin/stock/history`, paginated, with filters). Nothing remaining.
-2. **Backlog hardening** (section 7): month and today in IST, payout edit audit trail, pagination and indexes, split `PayoutPage.jsx`, scope the global button rule, prettier clean-up.
-3. **Labels.** Confirm the label specification first (`NCH_Architecture_Plan.md` section 16), then build the product selector, template, batch and date inputs, preview and PDF or print output.
-4. **Sales documents** (rules in `NCH_Architecture_Plan.md` section 15). Step 11A (customer billing details, customer prices, Finished Goods HSN and GST rate), Step 11B (Estimates with payments), Step 11C (GST Invoices with payments), Step 11D (Estimate to Invoice conversion), Step 11E (Delivery Challans) and Step 11F (Monthly GST Report) are built. Before invoices go live, fill in `src/config/sellerProfile.js` and set the bank env variables, and get the accountant's sign-off on the rounding. Next candidates: credit notes for invoices reversed after a filed month, and a GSTR-1 export once the extra data listed in `NCH_Architecture_Plan.md` section 15 is confirmed.
-5. **Reports:** inventory by category, low stock, stock movement, raw material consumption, manufacturing, wastage, Finished Goods production, payroll register, attendance summaries (the monthly GST report is built). Build after operational workflows are stable.
-6. **Portals, orders, notifications and dashboard analytics** (`NCH_Architecture_Plan.md` section 17).
-7. **Performance Phase 2.** Only after live timing and query-plan evidence.
+### Step 12: Security basics
+
+- **Scope:** admin login lockout, rate-limit infrastructure and limits, CORS, security headers, audit log, ownership helper, hidden admin path (`ADMIN_LOGIN_PATH`). The enquiry limit is applied in step 14.
+- **Model:** Opus to plan, Sonnet to build.
+- **Live checks:**
+  - The 5th failed admin login locks for 15 minutes, per account and per IP; login works after the lock ends.
+  - The login limit (10 per 15 minutes per IP) and general API limit (300 per 15 minutes per IP) apply, using the real client IP behind Render.
+  - The deployed frontend works; other origins are blocked.
+  - Security headers are present on deployed responses.
+  - Failed logins are in the audit log.
+  - The ownership helper refuses another customer's record (route-level checks follow in steps 16 and 17).
+  - The admin login opens at the configured path; there is no public link to it.
+
+### Step 13: Design system and shell
+
+- **Scope:** navy theme, dark mode, grouped sidebar, login pages, optional password banner, dashboard. Finalise the dashboard card list.
+- **Model:** Sonnet.
+- **Live checks:**
+  - 360, 390 and 430px, tablet and desktop, in light and dark mode.
+  - Every built page is still reachable from the sidebar and on phones.
+  - Both login pages work. The admin page is `noindex`.
+  - The banner can be dismissed and does not force a password change.
+
+### Step 14: Public website, Enquiries inbox and Notifications
+
+- **Scope:** Home, Quality and Enquiry pages; enquiry form with honeypot, Cloudflare Turnstile and rate limit; Enquiries inbox; admin Notifications.
+- **Model:** Sonnet.
+- **Live checks:**
+  - The pages work on phone and desktop, with no admin link anywhere.
+  - An enquiry reaches the inbox, with a badge and a notification.
+  - The 6th enquiry within an hour from one IP is refused. Honeypot and failed Turnstile submissions are refused.
+  - Tabs, status, note, Call, WhatsApp, Create customer and Delete work.
+  - Unread filter, mark all read and open-item work.
+
+### Step 15: Settings and final invoice
+
+- **Scope:** Settings (company, bank, QR, invoice, website and enquiry, security), invoice layout v5, draft, preview, generate, 48-hour edit window with history, required Batch No. Settle the step 15 open questions (Architecture section 15) first.
+- **Model:** Opus to plan, Sonnet to build.
+- **Live checks:**
+  - Settings save and are admin-only; the QR uploads and removes.
+  - Drafts (direct and estimate conversion) take no number or stock and are not in the GST report.
+  - Generate assigns one number and takes stock once, also with two tabs. A converted estimate takes no stock again.
+  - A payment locks edits; so do 48 hours after Generate. Reverse still works. Edits appear in the history.
+  - Batch default, split lines and overwrite work; a blank batch is refused.
+  - Old invoices keep their bank details after Settings change.
+  - Printed and PDF output matches v5: one copy, about 15 items per page, CGST + SGST and IGST cases, each colour.
+
+### Step 16: Orders, customer accounts and Shipments
+
+- **Scope:** customer accounts, orders and approval flow, Shipments replacing challans. Plan Shipment details first. Before removing challan code, confirm the challans collection is empty.
+- **Model:** Opus to plan, Sonnet to build.
+- **Live checks:**
+  - Admin creates a login; the customer signs in with mobile or email.
+  - A customer cannot read another customer's data, including by changing ids in requests.
+  - Order, Approve, Approve with changes (never above the ordered quantity) and Reject (reason required) work, with customer notifications.
+  - Cancel works only before approval, also when it races an approval.
+  - Approval creates only a draft: no number, no stock change.
+  - Mark Dispatched and Mark Received work.
+  - Partial shipments never exceed invoice quantities, also with two tabs. A shipment works without an order. Shipments change no stock.
+
+### Step 17: Customer Billing
+
+- **Scope:** Billing tabs Invoices, Payments and Statement, with PDF download; payment notification to the customer.
+- **Model:** Opus to plan, Sonnet to build.
+- **Live checks:**
+  - Only the customer's generated invoices appear, never drafts; the PDF matches the printed layout.
+  - Recording a payment shows the customer a notification. Payments are read-only.
+  - Billed, paid, balance and statement opening, running and closing balances match the admin ledger.
+  - Another customer's invoice or PDF is refused.
+
+### Step 18: Website Products admin
+
+- **Scope:** add, edit, delete (confirm), Shown or Hidden; name, group, photo, short description, status.
+- **Model:** Sonnet.
+- **Live checks:** each action works; hidden products do not appear publicly; photos still load after a redeploy; the public site needs no login and the admin actions do.
+
+### Step 19: Admin two-factor
+
+- **Scope:** authenticator setup in Settings (Security) and the 6-digit code at admin login.
+- **Model:** Opus to plan, Sonnet to build.
+- **Live checks:** setup with a real authenticator app; wrong and expired codes are refused; lockout and rate limits still apply; the admin API cannot be used with the password alone.
+
+### Later
+
+Supplier portal (view-only first), WhatsApp, OTP, forgot-password by email or SMS.
+
+### Not scheduled
+
+- **Labels.** Confirm the specification first (`NCH_Architecture_Plan.md` section 16).
+- **Backlog fixes** (section 7): IST "today", payout edit audit trail, pagination and indexes, split `PayoutPage.jsx`, scope the global button rule, prettier clean-up.
+- **Reports:** inventory by category, low stock, stock movement, raw material consumption, manufacturing, wastage, Finished Goods production, payroll register, attendance summaries.
+- **Performance Phase 2**, only after live timing and query-plan evidence.
+- **Credit notes** for invoices reversed after a filed month.
+- **GSTR-1** export, once the extra data in `NCH_Architecture_Plan.md` section 15 is confirmed.
 
 ## 9. Deployment workflow
 
@@ -339,3 +451,9 @@ Never allow negative stock. Preserve permanent stock history.
 Never read or print .env files or secrets.
 Update both plans at the end of each task.
 ```
+
+## 11. Decisions log
+
+| Date | Decision record |
+|---|---|
+| 28 Nov 2026 | Approved design decisions, including the additional decisions in section 9 of that file: `docs/NCH_Design_Decisions.md`. It is the source of truth for what it covers. |

@@ -1,6 +1,6 @@
 # NCH Factory Management System — Architecture Plan
 
-Status tags used in this file: **Built** (working route and UI exist), **Partial** (part exists, or known defects), **Planned** (approved, no code). Status was checked against the source and the 2026-11-21 audits (`NCH_Audit_Backend.md`, `NCH_Audit_Frontend.md`). The audits describe commits from 2026-10-24; where the current source is newer, the source wins. Delivery status and the backlog are in `NCH_Development_Plan.md`.
+Status tags used in this file: **Built** (working route and UI exist), **Partial** (part exists, or known defects), **Planned** (approved, no code). New items from `NCH_Design_Decisions.md` are marked **PLANNED**. That file is the source of truth for what it covers. Status was checked against the source and the 2026-11-21 audits (`NCH_Audit_Backend.md`, `NCH_Audit_Frontend.md`). The audits describe commits from 2026-10-24; where the current source is newer, the source wins. Delivery status and the backlog are in `NCH_Development_Plan.md`.
 
 ## Table of contents
 
@@ -20,7 +20,7 @@ Status tags used in this file: **Built** (working route and UI exist), **Partial
 14. Dashboard
 15. Customer pricing, sales documents and the GST report (Built)
 16. Planned: Labels
-17. Planned: portals, orders, notifications and analytics
+17. PLANNED: public website, accounts, admin, orders and portals
 18. UI/UX standards
 19. Performance and pagination standards
 20. Engineering rules learned
@@ -32,6 +32,8 @@ Status tags used in this file: **Built** (working route and UI exist), **Partial
 **Project:** NCH Factory Management System. **Company:** New Calcutta Handloom (NCH).
 
 An internal factory-management system for employees, attendance, payroll, suppliers, stock, washing, manufacturing and (planned) sales documents, labels and portals. It stays tailored to NCH workflows and does not become a generic ERP.
+
+**PLANNED:** a public website, a customer portal and, later, a supplier portal (section 17).
 
 ## 2. Technology stack and hosting
 
@@ -82,7 +84,13 @@ Admin  →  React frontend  →  Axios / REST  →  Express backend  →  Mongoo
 | Delivery Challans (against an invoice, partial dispatch, cancel, print) | Built (11E) |
 | Monthly GST report (summary, rate, B2B/B2C, HSN, register, CSV) | Built (11F) |
 | Labels page and label printing | Planned (Label exists only as a Manufacturing input rule) |
-| Portals, Orders, Notifications | Planned |
+| Security basics and Audit Log | PLANNED (sections 6, 17) |
+| Public website (Home, Quality, Enquiry), Enquiries inbox, Website Products | PLANNED (section 17) |
+| Customer accounts and portal, Orders, Notifications | PLANNED (section 17) |
+| Settings, draft-to-Generate invoices, new invoice layout | PLANNED (sections 15, 17) |
+| Shipments (replaces Delivery Challans) | PLANNED (sections 15, 17) |
+| Admin two-factor login | PLANNED (section 17) |
+| Supplier portal | PLANNED, LATER (section 17) |
 
 Backend domains: authentication, employees, attendance, payroll and payout, customers, suppliers and supplier payments, material receipts, stock, washers and washing processes, washer accounting, manufacturing, dashboard.
 
@@ -165,6 +173,25 @@ Legacy redirects: `/employees`, `/customers`, `/employees/attendance`, `/employe
 /admin/labels            label generation and printing
 ```
 
+URLs for the other PLANNED pages (section 17) are not decided.
+
+### PLANNED: admin sidebar
+
+This will replace the order of the Built sidebar below. Nothing built is removed.
+
+| Group | Items |
+|---|---|
+| Overview | Dashboard, Notifications (unread badge) |
+| Sales | Enquiries (badge), Orders (badge), Customers, Estimates, Invoices, Shipments, GST Report |
+| Factory | Employees, Attendance, Payout, Washers, Factory Flow |
+| Stock | Stock, Stock History |
+| Website | Website Products |
+| System | Suppliers, Audit Log, Settings |
+
+- Navy theme, compact density, dark mode option on the dashboard.
+- Shipments takes the place of Challans (section 15).
+- Not decided: the Built "Products" shortcut (not in the list) and the admin phone navigation.
+
 ### Admin Shell navigation (Built)
 
 All admin routes render through one responsive `AdminShell`. The public `Navbar` is used only on the public home page.
@@ -184,6 +211,17 @@ All admin routes render through one responsive `AdminShell`. The public `Navbar`
 - Money is stored in integer paise for suppliers, washers and material receipts. Payroll amounts use rupee numbers rounded to two decimals.
 - Never expose secrets or JWT keys in frontend code. `.env` is never tracked.
 - Gaps: CORS is open, there is no login rate limit, and there is no pagination on several list endpoints (Development Plan section 7).
+
+### PLANNED: security
+
+- **Admin login lockout:** 5 failed attempts lock for 15 minutes, per account and per IP.
+- **Rate limits per IP:** login 10 per 15 minutes; public enquiry 5 per hour; general API 300 per 15 minutes.
+- **CORS and security headers:** restrict CORS (open today) and add headers. The exact rules are not decided.
+- **Audit Log:** read-only, kept forever, includes failed logins (section 17.3).
+- **Data ownership:** the server checks on **every request** that a customer reads and changes only their own prices, orders and invoices, through a shared ownership helper. Hiding something in the UI is never a permission control.
+- **Hidden admin login:** a long, non-obvious path set by the `ADMIN_LOGIN_PATH` environment variable. The value is never written in the docs. No public link, and `noindex`. Not decided: how the frontend gets the path (Rsbuild exposes only `PUBLIC_` variables to the browser, section 20).
+- **Anti-spam** (honeypot, Cloudflare Turnstile, enquiry rate limit) is built with the enquiry form. The security step only provides the rate-limit infrastructure.
+- **Admin two-factor:** section 17.2.
 
 ## 7. Stock core
 
@@ -786,37 +824,181 @@ Existing invoice responses only gained fields (the stored dispatch counters, and
 | Estimate (Built, 11B) | Deducts stock on creation; edit adjusts by difference; cancel returns it | No HSN or GST | Separate Estimate ledger, payments and balance |
 | Invoice (Built, 11C) | Deducts stock on creation; edit (before payment) adjusts by difference; reversal returns it | HSN, GST rate, customer GSTIN, CGST/SGST or IGST | Customer Invoice ledger, payments and balance |
 | Estimate converted to Invoice (Built, 11D) | No second deduction | Invoice tax fields apply | Payments carried over; the estimate and invoice links are auditable |
-| Challan (Built, 11E) | None; the invoice already deducted the stock | No GST, GSTIN or prices | No sales or payment balance effect |
+| Challan (Built, 11E; to be replaced by Shipments) | None; the invoice already deducted the stock | No GST, GSTIN or prices | No sales or payment balance effect |
+| Draft invoice (PLANNED) | None | Not in the GST report | No number; fully editable |
+
+The table shows today's behaviour except the PLANNED row. The PLANNED invoice flow below moves invoice stock deduction from creation to Generate.
 
 The monthly GST report (Built, 11F) is built from GST invoices only. A legacy `POST /api/customers/:id/order` stub exists (no frontend caller, no Order model).
+
+#### PLANNED: invoice flow
+
+- Every invoice (direct, from an order, or an estimate conversion) goes **Draft -> Preview -> Generate**.
+- A **draft** has no number, takes no stock, is not in the GST report and is fully editable. Approving an order creates only a draft.
+- **Generate** assigns the number and takes the stock. For an estimate conversion, stock is **not** deducted again. Stock rules for estimates stay as they are today.
+- **Edit window:** 48 hours from Generate. The length is fixed; Settings shows it as read-only text.
+- **A recorded payment locks edits**, even inside the 48 hours (today's rule).
+- After 48 hours or after any payment, the invoice is locked. Corrections use the existing reverse flow.
+- **Every edit is saved in the edit history.**
+- **Bank details** are stored on the invoice. It keeps the details it was created with.
+- **Batch No.** is required. The default is the oldest manufacturing batch that still has stock. One line uses one batch; a quantity needing more than one batch is split into several lines. Admin can overwrite.
+- **Colour setting:** maroon (default), navy, teal, green or charcoal.
+- **E & O.E.** is permanent, with no setting.
+- One copy per PDF, with no copy labels.
+
+#### PLANNED: what this replaces
+
+| Today (Built, 11A-11D) | PLANNED |
+|---|---|
+| Print layout in the 11C "Print" bullet | Layout v5 below replaces it |
+| Number assigned and stock deducted at creation | Both happen at Generate |
+| Optional `batchReference` | Required Batch No. with a default; lines split by batch (11C allows one line per product) |
+| Edit allowed while there is no valid payment | Also limited to 48 hours, with edit history |
+| Seller details in `src/config/sellerProfile.js` | Edited in Settings (Company) |
+| Bank details from environment variables; block omitted if missing | Edited in Settings (Bank and UPI), with a QR upload |
+| Conversion creates a numbered invoice | Conversion goes through the draft flow |
+
+Open for step 15:
+- The current stock model does **not** track stock per batch: `StockItem` has one `currentStock`, and a `ManufacturingEntry` records a batch number but no remaining quantity. How is "oldest batch with stock" worked out?
+- With the draft flow, when does an estimate become `converted` and its payments move? What can happen to the estimate while its draft exists?
+- Which fields can change inside the 48 hours, and how does stock adjust?
+- What does the bank-on-invoice toggle do?
+- How are invoices created before this change treated?
+
+#### PLANNED: final invoice layout (v5, approved)
+
+Copied from `NCH_Design_Decisions.md` section 1.
+
+> A4 portrait, white page, 6 mm margin, ONE copy per PDF (no Customer/Office copy labels). Accent colour maroon #7a1f2b, tint #f6e8ea (selectable in Settings: maroon default, navy, teal, green, charcoal).
+>
+> Header: logo box (left), NCH / NEW CALCUTTA HANDLOOM / address line, "TAX INVOICE" centred, right: Mobile 1, Mobile 2, email, website. Top rule 3px accent.
+> GSTIN bar: left "GSTIN: ..."; right "Mfg. Licence No.: ...".
+> Two boxes, 50/50, colon-aligned:
+>
+> Customer Detail: Buyer, Address, GSTIN, Place of supply (state + code). NO phone, NO PAN.
+> Invoice Detail: Invoice No., Invoice Date, E-Way No., Transport, Transport ID, Vehicle No. (optional).
+> Item table: Sr | Item | HSN | Batch No. | Qty (with unit pcs/doz, as saved in stock) | Rate (plain, e.g. 210.00) | Amount. Batch No. is required, defaulted from Manufacturing, admin can overwrite. Empty stretch area, then Total row. About 15 items fit on one page. No per-line GST columns.
+> Bottom left: "Total in words" (bold), Bank Details (Name, Branch, Acc. No., IFSC, UPI ID + UPI QR box), "Customer signature, stamp and date" (at top of its box).
+> Bottom right (each with colon): Taxable Amount, Add: CGST x%, Add: SGST x%, Total Tax, Round off, Total Amount (rupee symbol). Then signature box: "For NEW CALCUTTA HANDLOOM" at top, "Authorised Signatory" at bottom.
+> Very bottom line: "This is a computer generated invoice. E & O.E." (E & O.E. is permanent, no setting). Removed: certified line, tax breakup section at left, phone, PAN, challan date, copy labels, terms. GST: tax once per rate group on taxable total; CGST+SGST if buyer state code is 09, else IGST; grand total rounded to the rupee with a separate Round off line. IGST shows as one IGST line. Invoice keeps the bank details it was created with. 48-hour edit window after Generate, with edit history. Flow: order approved -> DRAFT invoice (no number, no stock, not in GST report, fully editable) -> Preview -> Generate (number assigned, stock taken). Pending: logo (owner doing later), licence number(s) value, seller profile and bank details entered in Settings, HSN + GST rate on every Finished Goods product, accountant sign-off (one-total GST method, round-off, HSN apportioning).
+
+#### PLANNED: Shipments replace Delivery Challans
+
+- Shipments are dispatch tracking on orders. Nothing is built.
+- Partial shipments are needed, with the same cap logic as challans today.
+- A shipment can be created from any generated invoice. An order is optional.
+- The challan code (Built, 11E) is removed **only after confirming the challans collection is empty**.
+- Other details are decided when step 16 is planned, including: how partial shipments set the order status, whether an order can be dispatched before its invoice is generated, and how shipments affect invoice edit and reverse.
 
 ## 16. Planned: Labels
 
 Today a Label exists only as a Manufacturing input rule (section 11). The `/admin/labels` page and label printing are Planned. Confirm before building: label and sheet size, labels per sheet, company name, manufacturer address, product name, size or type, pack quantity, batch number, manufacturing date, MRP, barcode or QR, regulatory text and the print/PDF format.
 
-## 17. Planned: portals, orders, notifications and analytics
+## 17. PLANNED: public website, accounts, admin, orders and portals
 
-Approved direction; no code exists. The `User.role` enum lists `employee` and `customer`, but every API is admin-only and no portal UI exists.
+Everything in this section is **PLANNED**; none of it is built. The `User.role` enum lists `employee` and `customer`, but every API is admin-only and no portal UI exists. Invoice rules are in section 15, security in section 6, theme in section 18.
 
-**Identity and access**
-- No public registration, Sign Up or role selector. Admin creates the business master, enables portal access and issues a Login ID with a temporary password; the user changes it on first login. Forgot Password is allowed later. Passwords stay hashed; Admin can reset but never read one.
-- Business masters and Portal Users are separate; a Portal User links to one Customer or Supplier. Future roles: `admin`, `customer`, `supplier`, `factory_manager`. Every portal endpoint needs backend authorization plus ownership checks; hiding in the UI is never a permission control.
-- Planned: enable/disable, forced session invalidation where practical, reset workflow, last login, activity logs and an audited read-only Admin "View As Customer" that never uses or reveals the password.
+### 17.1 PLANNED: public website (navy)
 
-**Customer portal and orders**
-- Customers see only Admin-assigned Finished Goods (their active `CustomerProductPrice` rows), never factory stock, quantities or availability. There is no product default price: the customer price applies, optionally replaced by a document-specific Admin override. Price changes affect future activity only; Orders, Estimates and Invoices keep immutable price snapshots.
-- Order and Invoice are separate entities with separate counters. Orders may come from portal, phone, WhatsApp, in person, salesperson or Admin. Statuses: Received, Confirmed, Preparing, Ready to Ship, Invoiced, Dispatched, Completed, Cancelled. Lines keep requested and confirmed quantity; notes keep Customer, Admin and Factory visibility separately. No stock is deducted until Invoice finalization. A confirmed order may produce a non-financial Factory Order Slip. After invoicing, cancellation must follow Invoice reversal rules.
-- On Invoice finalization, one transaction validates Finished Goods, finalizes the invoice, deducts stock with movements, updates the Customer Invoice account, links any Order and optionally creates a notification. Customer account data is view-only; only Admin records payments.
+- **Pages:** Home, Quality and Enquiry. No Products page and no Contact page.
+- **Copy:** the factory is in Uttar Pradesh. "New Calcutta Handloom" is only the company name; do not present it as a Calcutta-based company. "Across India" supply; India only.
+- **Home:** top strip (phone, email); header (logo, Home, Quality, Enquiry, Login, Ask for rates); hero with image; trust strip (own factory, licensed, GST invoices, across India); Our products (4 cards with images, rates only on enquiry); How it works (3 steps); call-to-action band to Enquiry; footer (address, GSTIN, licence, links, Customer/Supplier login).
+- **No link to the admin login anywhere.**
+- **Quality:** made in own factory, 4-step process, licences (manufacturing licence, GSTIN, batch traceability).
+- **Enquiry:** "Talk to us" (reply within 2 working days; business hours Mon-Sat 10-4); address, phone, email.
+  - Form: name, business or shop, mobile, city and state, product, message (optional), consent tick.
+  - **No quantity.** OTP is later.
+  - Honeypot, Cloudflare Turnstile and the enquiry rate limit ship with this form.
+- Sample images are used until real product photos exist. Hosting stays on Vercel for now; Cloudflare hosting and a domain are not decided.
+- **Website Products (admin):** add, edit, delete (with confirm), Shown or Hidden. Fields: name, group, photo, short description, status.
 
-**Supplier portal and purchase orders**
-- Supplier Detail will gain Materials Supplied, Purchase Orders, Receipts, Payments, Account and Portal Access. A bulk PO builder creates separate supplier-specific POs; suppliers see only their own. PO receiving supports partial delivery; direct Material Receiving stays valid. Supplier bill uploads never change stock, create a receipt or create a payable until Admin verifies. Suppliers cannot record payments or mark material received.
+### 17.2 PLANNED: login and accounts
+
+- **One Login page for customers and suppliers:** mobile or email, plus password.
+- **Admin creates all logins**, with a random password for each person. No sign-up. New people use "Ask for rates".
+- **No forced password change.** A dismissible banner says "Change it for better security", with Change password and Later.
+- **Forgot password:** admin resets it for now; a reset link comes later.
+- Passwords stay hashed. Admin can reset a password but never read it.
+- **Admin login:** separate hidden page (section 6): email, password and a 6-digit authenticator code. Lockout and rate limits apply. The authenticator is added in the two-factor step.
+
+### 17.3 PLANNED: admin
+
+Admin-only access. The sidebar is in section 5. The dashboard summary has an **Attendance** card where a Stock card was planned; stock alerts come through Low stock notifications. The exact dashboard card list is **to be finalised in step 13**.
+
+**Enquiries inbox**
+- Tabs: New, Contacted, Rates sent, Customer made, Closed, All.
+- List and detail panel: Call, WhatsApp, status, internal note, Create customer, Delete (with confirm).
+- "Reply by" is 2 working days.
 
 **Notifications**
-- A separate in-app notification system (unread count, read state, related-record links, recent activity). WhatsApp is optional, controlled by Admin per account and per action, and uses only an approved provider. A WhatsApp failure never rolls back a transaction; it is logged or queued and retried later.
-- Public Estimate Request: visitors do not register; they submit name, company, phone, email, products, quantity and a message, then verify the phone by OTP. Admin reviews and prices it; public input never creates a final Estimate by itself.
+- The admin list shows only: new enquiry, new order, order received, low stock.
+- Unread filter, mark all read; selecting one opens the item.
+- When admin records a payment, the **customer** sees a notification in the portal.
 
-**Dashboard analytics**
-- New, Pending and Ready-to-Ship orders, Customer and Supplier Outstanding, invoices this month, low stock, recent activity, and a six-month Sales Overview with server-side month, financial-year and custom ranges. All use backend aggregation endpoints, never browser-side scans of every Invoice.
+**Audit Log**
+- Read-only and kept forever. Filters by type and date. Includes failed logins.
+- The full list of logged events is not decided.
+
+**Settings** (admin only)
+
+| Tab | Contents |
+|---|---|
+| Company | Legal name, GSTIN, licence, state, address, mobiles, email, website, logo |
+| Bank and UPI | Editable bank details; upload or remove the UPI QR |
+| Invoice | Colour; 48-hour window as read-only text; bank-on-invoice toggle |
+| Website and enquiry | Reply-within days (2), business hours (10 to 4), public phone and email, enquiry thank-you message |
+| Security | Change password, authenticator setup (two-factor step), active sessions, log out everywhere |
+
+### 17.4 PLANNED: orders and shipments
+
+- A customer places an order with quantities.
+- **Admin Orders page:** summary tiles; tabs Pending approval, Approved, Dispatched, Received, Rejected; items show quantity.
+- **Admin actions:**
+  - **Approve.**
+  - **Approve with changes:** edit the approved quantity or remove items, with a message to the customer. A quantity cannot exceed the ordered quantity. Shows a stock warning. The status shown is "Approved with modification".
+  - **Reject:** a reason is required and is shown to the customer.
+- **Cancel:** the customer can cancel only before approval.
+- Approval creates **only a DRAFT invoice** (section 15).
+- **Mark Dispatched:** admin. **Mark Received:** admin or customer.
+- The customer gets a notification about the order.
+- **Shipments** track dispatch and replace Delivery Challans (section 15).
+
+### 17.5 PLANNED: customer portal
+
+- **Desktop top menu:** Home, My orders, New order, Billing, Account.
+- **Phone bottom bar:** Home, My orders, a centred raised **+ New order**, Billing, Account. Content is never under the bar; touch targets are at least 40px.
+- **Home:** optional password banner; tiles (open orders, on the way, balance due); recent orders.
+- **New order:** products with the customer's own rates, and quantity; estimate before GST; "Send for approval". A product with no rate shows "Ask admin".
+- **My orders:** progress line (Sent, Approved, Dispatched, Received), ordered and approved quantities, admin message, Mark as received, Cancel (before approval only), download invoice.
+- **Billing**, with sub-tabs. Totals: billed, paid, balance.
+  - **Invoices:** only generated invoices, never drafts. The PDF uses the same layout as the printed invoice.
+  - **Payments:** date, invoice, mode, amount. Read-only.
+  - **Statement:** date range, opening balance, billed, paid, running balance, closing balance, PDF download.
+- **Account:** business details (read-only; contact NCH to change), change password, log out.
+- **Rule:** a customer sees only their own prices, orders and invoices. **The server enforces this on every request.**
+- Customers never see factory stock. Price changes affect future activity only; documents keep price snapshots.
+
+### 17.6 PLANNED, LATER: supplier portal
+
+A proposal, **view-only first**: balance owed, supplies, payments, statement, account. Phone bar: Home, Supplies, Payments, Account. Screens are still to be drawn, and supplier actions are not decided.
+
+### 17.7 PLANNED, LATER
+
+WhatsApp notifications, OTP, and forgot-password by email or SMS.
+
+### 17.8 Older proposals, not confirmed
+
+These were in an earlier plan and are not in the design decisions. Do not build them without approval.
+- Orders entered by admin from phone, WhatsApp, in person or a salesperson
+- Factory Order Slips
+- Price overrides on a single document
+- Admin "View As Customer"
+- Supplier purchase orders, partial PO receiving and supplier bill uploads
+- Separate Order numbering; separate Customer, Admin and Factory notes
+- A `factory_manager` role
+- Enabling or disabling portal access, last login and per-user activity logs
+- Dashboard sales analytics (outstanding totals, six-month sales overview, custom ranges)
+- WhatsApp controls per account and action (approved provider only; a failure never rolls back a transaction)
 
 ## 18. UI/UX standards
 
@@ -827,6 +1009,14 @@ These apply to every change. They do not authorize redesigning a working workflo
 **Responsive standard.** Review every new or changed page at desktop, tablet and mobile widths. Required outcomes: no page-level horizontal overflow; no clipped important control; no overlapping text or actions; long names wrap safely; fixed desktop sizes do not leak into mobile; fixed bottom navigation never covers final content or actions; navigation controls stay visible with enough contrast. Tables need a deliberate strategy: a compact mobile representation where a desktop table cannot fit, or contained local scrolling only where appropriate (never page-level). Important information must not disappear on mobile.
 
 **Design direction.** Professional navy and white NCH look: clean cards, lightweight tables, status badges, consistent spacing and type, compact sidebar, mobile bottom navigation.
+
+**PLANNED: theme**
+- Public website and all apps: navy `#0b1f3a`, tint `#e6ebf3`.
+- Invoice: maroon `#7a1f2b`, tint `#f6e8ea` by default. Settings also offers navy, teal, green and charcoal for the invoice only.
+- Do not use red (Red Cross emblem).
+- The logo is not final.
+- Admin: compact density, dark mode option on the dashboard.
+- Customer portal phone bar: section 17.5.
 
 **Controls and layout**
 - Every internal, detail or workflow page has a left-aligned control whose text is exactly `Back` ("Back to Supplier" is not allowed). New routed pages open at the top.
