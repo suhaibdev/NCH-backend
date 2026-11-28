@@ -79,9 +79,20 @@ Website and enquiry: reply-within days (2), business hours (10 to 4), public pho
 9.6 Notifications. Payment: when admin records a payment, the customer sees a notification in the portal. The admin Notifications list shows only: new enquiry, new order, order received, low stock.
 
 9.7 Security.
-Admin login lockout: 5 failed attempts, locked 15 minutes, per account and per IP.
+Login lockout (all login types: admin, customer, supplier): 5 failed attempts within 15 minutes, locked 15 minutes, per account and per IP, counted separately for each login type. Generic messages; never reveal whether an account exists. The lock expires on its own. A successful login clears the account count, not the IP count.
 Rate limits per IP: login 10 per 15 minutes; public enquiry 5 per hour; general API 300 per 15 minutes.
-Admin login path: set by the ADMIN_LOGIN_PATH environment variable. The value is never written in the docs.
-Anti-spam: honeypot, Cloudflare Turnstile and the enquiry rate limit are built in step 14 with the enquiry form. Step 12 only provides the rate-limit infrastructure.
+Admin login address: a frontend setting, added in step 13. The backend has no admin path setting. The value is never written in the docs.
+Anti-spam: honeypot and Cloudflare Turnstile are built in step 14 with the enquiry form, which uses the enquiry rate limit. Step 12 provides the rate limits and a placeholder enquiry route.
 
 9.8 Shipments. Partial shipments are needed (same cap logic as challans today). A shipment can be created from any generated invoice; an order is optional. Other details are decided when step 16 is planned.
+
+9.9 Step 12, security basics (status: built, backend only; not yet checked live).
+Packages: helmet and express-rate-limit.
+Lockout counts are stored in MongoDB and expire automatically, so they survive restarts. Rate limit counts are in memory: on the Render free tier a restart, deploy or spin-down resets them.
+CORS allow-list: CORS_ALLOWED_ORIGINS, no wildcard. If it is empty, all browser origins are blocked. HSTS only in production.
+Request limit: 100 KB for JSON only. File uploads (logo, UPI QR, step 15) need their own limit.
+Audit log: append-only, kept forever. Step 12 records login success, failure and lockout only. One helper serves later events. By default a failed audit write is logged and the request continues. Money and security events use the fail-closed option and, when they run in a transaction, write inside it.
+The Audit Log page is built in step 13.
+Events to wire in later: password change and reset; creating or disabling a customer account; invoice generate, edit and reverse; payment record and void; order approve and reject; Settings changes (especially bank details); manual stock changes; enquiry delete.
+Ownership: a shared helper limits a customer or supplier to their own records. No portal route uses it yet.
+Live checks: see the Development Plan, section 8, step 12.

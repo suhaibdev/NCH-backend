@@ -84,7 +84,9 @@ Admin  →  React frontend  →  Axios / REST  →  Express backend  →  Mongoo
 | Delivery Challans (against an invoice, partial dispatch, cancel, print) | Built (11E) |
 | Monthly GST report (summary, rate, B2B/B2C, HSN, register, CSV) | Built (11F) |
 | Labels page and label printing | Planned (Label exists only as a Manufacturing input rule) |
-| Security basics and Audit Log | PLANNED (sections 6, 17) |
+| Security basics: login lockout, rate limits, CORS, headers, ownership helper (Step 12, backend) | Built, not verified live (section 6) |
+| Audit log: record, helper and read API (Step 12). Only logins are recorded so far | Built, not verified live (section 6) |
+| Audit Log page, hidden admin login address | PLANNED, step 13 |
 | Public website (Home, Quality, Enquiry), Enquiries inbox, Website Products | PLANNED (section 17) |
 | Customer accounts and portal, Orders, Notifications | PLANNED (section 17) |
 | Settings, draft-to-Generate invoices, new invoice layout | PLANNED (sections 15, 17) |
@@ -92,7 +94,7 @@ Admin  →  React frontend  →  Axios / REST  →  Express backend  →  Mongoo
 | Admin two-factor login | PLANNED (section 17) |
 | Supplier portal | PLANNED, LATER (section 17) |
 
-Backend domains: authentication, employees, attendance, payroll and payout, customers, suppliers and supplier payments, material receipts, stock, washers and washing processes, washer accounting, manufacturing, dashboard.
+Backend domains: authentication, employees, attendance, payroll and payout, customers, suppliers and supplier payments, material receipts, stock, washers and washing processes, washer accounting, manufacturing, dashboard, audit log, and a public enquiry placeholder.
 
 ## 4. Repository and frontend structure
 
@@ -120,7 +122,7 @@ src/
 
 `pages/Products.jsx` is a public marketing section on the home page; it is not the admin Products item. `WasherDetailFixed.jsx` is the live route for washer master data and rates; the name is legacy. `Stock/StockHistoryPage` serves `/admin/stock/history`. There is no `LabelsPage` or `WashingPage`.
 
-Backend: `index.js`; `src/config/sellerProfile.js` (public NCH seller details); `src/routes/` (19 route files), `src/models/` (32 models), `src/middleware/` (auth, role, database readiness), `src/utils/` (helpers listed per feature below), `test/` (plain Node assert scripts, see Development Plan section 6).
+Backend: `index.js`; `src/config/sellerProfile.js` (public NCH seller details); `src/routes/` (21 route files), `src/models/` (34 models), `src/middleware/` (auth, role, database readiness, rate limits, security), `src/utils/` (helpers listed per feature below), `test/` (plain Node assert scripts, see Development Plan section 6).
 
 ## 5. Routes and navigation
 
@@ -204,23 +206,65 @@ All admin routes render through one responsive `AdminShell`. The public `Navbar`
 
 ## 6. Security, API conventions and data access
 
-- Every `/api/*` route except `POST /api/auth/login` and `GET /api/health` is mounted with `verifyToken` and `authorizeRoles("admin")`. Route files add no auth of their own. The token is not re-checked against the user collection.
+- Every `/api/*` route except `POST /api/auth/login`, `GET /api/health` and the `POST /api/enquiries` placeholder is mounted with `verifyToken` and `authorizeRoles("admin")`. Route files add no auth of their own. The token is not re-checked against the user collection.
 - Startup connects to MongoDB before binding the HTTP port (10-second server-selection timeout). A shared readiness gate returns 503 for `/api` traffic while MongoDB is disconnected. `GET /api/health` reports only `ready` or `not_ready`.
 - Server errors return generic messages through `utils/httpErrors.js` (`sendServerError`); details are logged on the server only.
 - The backend is authoritative for stock, payout, label, reversal, duplicate-batch, financial-total and transaction rules. Frontend validation is a convenience.
 - Money is stored in integer paise for suppliers, washers and material receipts. Payroll amounts use rupee numbers rounded to two decimals.
 - Never expose secrets or JWT keys in frontend code. `.env` is never tracked.
-- Gaps: CORS is open, there is no login rate limit, and there is no pagination on several list endpoints (Development Plan section 7).
+- Gaps: there is no pagination on several list endpoints (Development Plan section 7).
+
+### Built in Step 12: security basics (backend only; not verified live)
+
+**Request order** (`index.js`): proxy trust (one hop, for Render), security headers, CORS, JSON body parser, `/api/health`, general rate limit, login limit, readiness gate, routes.
+
+**Login lockout** (`utils/loginLockout.js`, `utils/guardedLogin.js`, `models/LoginAttempt.js`)
+- Applies to **every login type**. Today only the admin login exists; customer and supplier logins must call the same code with their own `loginType`.
+- 5 failures within 15 minutes lock for 15 minutes, **per account and per IP**, counted separately for each login type. The lock ends on its own and is never extended.
+- Stored in MongoDB, so it survives restarts. Each failure is one atomic update. A TTL index on `expiresAt` removes old records.
+- A success clears the account count, not the IP count.
+- Locked: **429** "Too many failed attempts. Please try again later." Wrong details: the existing **401**. Success: unchanged.
+- It never reveals whether an account exists: unknown accounts are counted and locked the same way, and a dummy bcrypt hash (cost 12, as in `createAdmin.js`) is compared for them. If the password cost changes, the dummy hash must change too.
+- A non-text email or password now gets the existing **400**. Before, it returned 500 for a real account and 401 for an unknown one.
+- Parallel guesses are queued per account and per IP, so a burst cannot get more than 5 password checks. This works on one server instance only.
+
+**Rate limits** (`middleware/rateLimits.js`, `express-rate-limit`, per IP)
+
+| Limit | Applies to |
+|---|---|
+| 10 per 15 minutes | `POST /api/auth/login` (successful logins count too) |
+| 5 per hour | `POST /api/enquiries` |
+| 300 per 15 minutes | all `/api` except `/api/health` |
+
+- Over the limit: **429** JSON, with `RateLimit-*` and `Retry-After` headers.
+- Counted **in memory**. On Render's free tier (one instance) a restart, a deploy or a spin-down after about 15 idle minutes **resets every rate-limit count**. More than one instance would need a shared store. Lockouts are not affected.
+- `POST /api/enquiries` is a public **placeholder** returning **501** until step 14.
+
+**CORS, headers, body size** (`middleware/security.js`)
+- CORS allows only exact origins in `CORS_ALLOWED_ORIGINS` (comma-separated). Wildcard and `null` entries are ignored. A disallowed origin gets no CORS headers. Requests without an `Origin` work. **If the variable is empty, all browser origins are blocked.**
+- `helmet` defaults; no `X-Powered-By`; HSTS only when `NODE_ENV=production`.
+- **JSON** bodies are limited to 100 KB. File uploads (logo and UPI QR, step 15) are not covered and **need their own limit** and type checks.
+- Helmet sends `Cross-Origin-Resource-Policy: same-origin`. An image served by the API and shown on the frontend's origin would be blocked unless that route relaxes it (step 15).
+
+**Audit log** (`models/AuditLog.js`, `utils/auditLog.js`, `routes/auditLog.js`)
+- Fields: `actor`, `actorRole`, `identifier` (login email as typed, normalized), `action`, `recordType`, `recordId`, `details`, `ip`, `createdAt`.
+- **Append-only:** the model refuses every update, replace, delete, bulk write and re-save. There is no route to change records, no TTL, and a test scans the code for such calls. This is an application rule: someone with direct database access can still change records.
+- Recorded today: `login.success`, `login.failure`, `login.lockout` (when a lock starts and on each attempt while locked). Passwords are never recorded; detail keys that look secret are redacted; large details are dropped.
+- `recordAudit(...)` is the one helper for other routes. **Default:** a failed write is logged and the request continues (right for logins). **`failClosed: true`:** it throws. Use this for money and security events. **With a `session`** it writes inside the transaction and always throws on failure. Pass the session for money events: without it, a throw cannot undo changes already committed.
+- `GET /api/audit-log` (admin only): always paged (20, max 100), newest first; filters `action`, `recordType`, `from`, `to`. Dates are Asia/Kolkata calendar days, both included. Bad input is 400.
+- **Not wired yet:** password change and reset; creating or disabling a customer account; invoice generate, edit and reverse; payment record and void; order approve and reject; Settings changes (especially bank details); manual stock changes; enquiry delete.
+
+**Ownership helper** (`utils/ownership.js`), for portal routes only
+- `getOwnerScope(user)`, `scopeFilter(user, "customer" | "supplier", filter)`, `isOwnedRecord(user, record)`.
+- A customer reads only records of their `customerId`; a supplier only their `supplierId`. Admin and unknown roles get no scope. `scopeFilter` throws without a matching scope.
+- Portal routes should answer **404** for a refused record.
+- No route uses it yet. Before step 16 uses it, `User` needs the customer or supplier link and `verifyToken` must pass it on (today it passes only `id` and `role`).
 
 ### PLANNED: security
 
-- **Admin login lockout:** 5 failed attempts lock for 15 minutes, per account and per IP.
-- **Rate limits per IP:** login 10 per 15 minutes; public enquiry 5 per hour; general API 300 per 15 minutes.
-- **CORS and security headers:** restrict CORS (open today) and add headers. The exact rules are not decided.
-- **Audit Log:** read-only, kept forever, includes failed logins (section 17.3).
-- **Data ownership:** the server checks on **every request** that a customer reads and changes only their own prices, orders and invoices, through a shared ownership helper. Hiding something in the UI is never a permission control.
-- **Hidden admin login:** a long, non-obvious path set by the `ADMIN_LOGIN_PATH` environment variable. The value is never written in the docs. No public link, and `noindex`. Not decided: how the frontend gets the path (Rsbuild exposes only `PUBLIC_` variables to the browser, section 20).
-- **Anti-spam** (honeypot, Cloudflare Turnstile, enquiry rate limit) is built with the enquiry form. The security step only provides the rate-limit infrastructure.
+- **Data ownership:** the server checks on **every request** that a customer reads and changes only their own prices, orders and invoices, using the ownership helper. Hiding something in the UI is never a permission control.
+- **Hidden admin login (step 13):** a long, non-obvious address, set in the **frontend**. The backend has no admin-path setting. No public link, and `noindex`. The value is never written in the docs. A frontend setting ships in the browser bundle, so a hidden address is not access control.
+- **Anti-spam** (honeypot, Cloudflare Turnstile) is built with the enquiry form in step 14, which also uses the enquiry rate limit.
 - **Admin two-factor:** section 17.2.
 
 ## 7. Stock core
@@ -896,7 +940,7 @@ Today a Label exists only as a Manufacturing input rule (section 11). The `/admi
 
 ## 17. PLANNED: public website, accounts, admin, orders and portals
 
-Everything in this section is **PLANNED**; none of it is built. The `User.role` enum lists `employee` and `customer`, but every API is admin-only and no portal UI exists. Invoice rules are in section 15, security in section 6, theme in section 18.
+Everything in this section is **PLANNED**; none of it is built, apart from the Step 12 backend pieces in section 6 (including the enquiry placeholder and the audit log API). The `User.role` enum lists `employee` and `customer`, but no portal API or UI exists. Invoice rules are in section 15, security in section 6, theme in section 18.
 
 ### 17.1 PLANNED: public website (navy)
 
@@ -937,7 +981,7 @@ Admin-only access. The sidebar is in section 5. The dashboard summary has an **A
 
 **Audit Log**
 - Read-only and kept forever. Filters by type and date. Includes failed logins.
-- The full list of logged events is not decided.
+- The API is built (section 6); the page is built in step 13. The events still to be wired in are listed in section 6.
 
 **Settings** (admin only)
 

@@ -9,6 +9,13 @@ const {
   formatOperationTiming,
   getHealthResponse,
 } = require("./src/utils/operationalStatus");
+const {
+  JSON_BODY_LIMIT,
+  createCorsOptions,
+  createSecurityHeaders,
+  parseAllowedOrigins,
+} = require("./src/middleware/security");
+const { apiLimiter, loginLimiter } = require("./src/middleware/rateLimits");
 
 // Load environment variables from .env file
 dotenv.config();
@@ -18,9 +25,23 @@ const port = process.env.PORT || 5000;
 const startupStartedAt = process.hrtime.bigint();
 const isDatabaseReady = () => mongoose.connection.readyState === 1;
 
+// Render puts one proxy in front of the app; without this every client would
+// share the proxy's IP for rate limits, lockouts and the audit log.
+app.set("trust proxy", 1);
+app.disable("x-powered-by");
+
 // Middleware
-app.use(cors());
-app.use(express.json());
+const allowedOrigins = parseAllowedOrigins(process.env.CORS_ALLOWED_ORIGINS);
+if (allowedOrigins.wildcardIgnored) {
+  console.warn("CORS_ALLOWED_ORIGINS: wildcard or 'null' entries are ignored.");
+}
+if (allowedOrigins.origins.length === 0) {
+  console.warn("CORS_ALLOWED_ORIGINS has no usable origin; browser requests will be blocked.");
+}
+
+app.use(createSecurityHeaders({ isProduction: process.env.NODE_ENV === "production" }));
+app.use(cors(createCorsOptions(allowedOrigins.origins)));
+app.use(express.json({ limit: JSON_BODY_LIMIT }));
 
 // Import routes
 const employeeRoutes = require("./src/routes/employees");
@@ -42,6 +63,8 @@ const payoutRoutes = require("./src/routes/payout");
 const stockRoutes = require("./src/routes/stock");
 const dashboardRoutes = require("./src/routes/dashboard");
 const authRoutes = require("./src/routes/auth");
+const enquiryRoutes = require("./src/routes/enquiries");
+const auditLogRoutes = require("./src/routes/auditLog");
 const verifyToken = require("./src/middleware/authMiddleware");
 const authorizeRoles = require("./src/middleware/roleMiddleware");
 
@@ -55,12 +78,18 @@ app.get("/api/health", (req, res) => {
   return res.status(health.statusCode).json(health.body);
 });
 
-app.post("/api/auth/login", createRequestTiming("POST /api/auth/login"));
+// Everything below /api counts against the general limit (health does not).
+app.use("/api", apiLimiter);
+
+app.post("/api/auth/login", createRequestTiming("POST /api/auth/login"), loginLimiter);
 app.get("/api/dashboard", createRequestTiming("GET /api/dashboard"));
 app.use("/api", createDatabaseReadinessMiddleware(isDatabaseReady));
 
 // Register API routes
 app.use("/api/auth", authRoutes);
+// Public. Placeholder until step 14; it has its own tighter rate limit.
+app.use("/api/enquiries", enquiryRoutes);
+app.use("/api/audit-log", verifyToken, authorizeRoles("admin"), auditLogRoutes);
 app.use("/api/dashboard", verifyToken, authorizeRoles("admin"), dashboardRoutes);
 app.use("/api/employees", verifyToken, authorizeRoles("admin"), employeeRoutes);
 app.use("/api/customers", verifyToken, authorizeRoles("admin"), customerRoutes);

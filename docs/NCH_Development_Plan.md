@@ -32,7 +32,7 @@ Continue building the NCH Factory Management System in controlled, testable phas
 
 | Area | Feature | Status | Notes |
 |---|---|---|---|
-| Core | Authentication | Built | Admin role only |
+| Core | Authentication | Built | Admin role only. Lockout and login rate limit added in Step 12 |
 | Core | Admin Shell (sidebar, mobile bottom nav) | Built | Order: Dashboard, Products, Attendance, Stock, Factory Flow, Payout, Washers, Suppliers, Customers, Estimates, Invoices, Challans, GST Report, Employees. Estimates, Invoices, Challans and GST Report sit in the mobile More sheet. No Stock dropdown. |
 | Core | Dashboard | Partial | Month salary and month advance use the IST month; "today" counts still use server-local time |
 | HR | Employees | Built | |
@@ -74,7 +74,9 @@ Continue building the NCH Factory Management System in controlled, testable phas
 | Platform | Notifications, WhatsApp | Planned | Notifications: PLANNED, from step 14. WhatsApp: LATER |
 | Platform | Dashboard analytics | Planned | Older proposal, not confirmed. The step 13 dashboard cards are to be finalised |
 | Platform | Performance Round 1 (caps, optional pagination, indexes, bounded payout previews) | Built | Static checks only; needs live MongoDB timing and `explain()` evidence. Create, edit and delete payout routes and `GET /stock/history` are still unbounded or full-history |
-| Platform | Security basics, audit log, ownership helper, hidden admin path | PLANNED | Step 12 |
+| Platform | Security basics: lockout, rate limits, CORS, headers, ownership helper | Built | Step 12, backend only; not verified live. No portal route uses the ownership helper yet |
+| Platform | Audit log (record, helper, read API) | Partial | Step 12; records logins only. Other events are not wired in. Page: PLANNED, step 13 |
+| Platform | Hidden admin login address | PLANNED | Step 13, frontend setting |
 | Platform | Design system and shell (navy, dark mode, grouped sidebar, logins, password banner, dashboard) | PLANNED | Step 13 |
 | Public | Website (Home, Quality, Enquiry), Enquiries inbox, admin Notifications | PLANNED | Step 14, with anti-spam |
 | Sales | Settings and final invoice (draft, preview, generate, 48-hour edit history, required Batch No.) | PLANNED | Step 15 |
@@ -174,6 +176,13 @@ There is no test runner and no `test` script. The files are plain `assert` scrip
 | `test/performance-phase1.test.js` | Readiness, timing and dashboard response helpers |
 | `src/utils/manufacturing.test.js` | Manufacturing payload and Label rules |
 | `src/utils/manufacturingHistory.test.js` | History filters |
+| `test/login-lockout.test.js` | Lock on the 5th failure, expiry, window, per account and per IP, success reset, the real update pipeline (run by `test/helpers/loginAttemptFake.js`), the real login route: 400/401/429, no account disclosure, dummy hash, parallel burst, audit entries, audit failure does not block login |
+| `test/rate-limits.test.js` | Real app: login, enquiry and general limits, per IP, 429 body and headers, health not limited, forwarded-IP handling |
+| `test/security-middleware.test.js` | Real app: CORS allow-list and preflight, no wildcard, empty list, helmet headers, HSTS in production only, no `X-Powered-By`, 100 KB JSON limit |
+| `test/audit-log.test.js` | Append-only (every update, delete, replace, bulk and re-save refused; source scan), admin-only read route, paging, filters, India-date bounds, helper default, `failClosed` and session behaviour |
+| `test/ownership.test.js` | Customer and supplier scope, refused cases, query filter cannot be widened |
+
+The app-level tests use `test/helpers/appHarness.js`, which runs requests through the real app without a port, database or `.env`.
 
 The frontend has no tests; its checks are `rsbuild build` and `prettier --check src`.
 
@@ -295,7 +304,10 @@ Run these against a connected database before a release.
 - Manufacturing batch-number duplicate protection is a `findOne` plus a non-unique index, so a duplicate race is possible.
 - `ManufacturingEntry.manufacturingNumber` declares its unique index twice (Mongoose may warn at startup).
 - Salary Slip works only from router state.
-- CORS is open and login has no rate limit. A deleted user's token stays valid until it expires.
+- A deleted user's token stays valid until it expires.
+- Rate-limit counts are in memory and reset on every restart. The queue that stops parallel password guesses also works on one instance only. Review both before running more than one instance.
+- Someone who knows the admin email can lock that account for 15 minutes, repeatedly. A few wrong passwords from a shared office connection also lock logins from that connection.
+- Audit records are never removed, including those for failed logins; watch database size.
 - Unused or stray files: `Login.jsx`, `auth.js`, `axios.js`, `rsbuild.config.mjs` in the backend repo; unused template images and `dayjs` in the frontend; `WashingEntry` model has no importer; `createAdmin.js` carries a default admin credential that must be changed after use.
 - Two overlapping washer directory views (`WashersPage`, `WashersListPage`).
 - Legacy per-employee payment-method control on the desktop Bulk Payout table, and the creation form sitting after history in the DOM (ordered visually with CSS).
@@ -314,6 +326,8 @@ Run these against a connected database before a release.
 - [ ] HSN code and GST rate on every Finished Goods product
 - [ ] Accountant sign-off (one-total GST method, round-off, HSN apportioning)
 - [ ] Live checks for steps 11A to 11F (section 6)
+- [ ] `CORS_ALLOWED_ORIGINS` and `NODE_ENV=production` set on Render
+- [ ] Live checks for step 12 (section 8)
 
 ### Not verified live
 
@@ -321,30 +335,38 @@ Browser behavior at 360/390/430px, tablet and desktop; physical or PDF print out
 
 ## 8. Roadmap
 
-All steps are **PLANNED**. Each follows section 4 before it starts. Rules are in `NCH_Architecture_Plan.md` and `NCH_Design_Decisions.md`. Models follow section 5. The live checks below need a deployed or connected environment.
+Step 12 is built (backend only, not verified live). Steps 13 onward are **PLANNED**. Each follows section 4 before it starts. Rules are in `NCH_Architecture_Plan.md` and `NCH_Design_Decisions.md`. Models follow section 5. The live checks below need a deployed or connected environment.
 
-### Step 12: Security basics
+### Step 12: Security basics (Built, backend only)
 
-- **Scope:** admin login lockout, rate-limit infrastructure and limits, CORS, security headers, audit log, ownership helper, hidden admin path (`ADMIN_LOGIN_PATH`). The enquiry limit is applied in step 14.
+- **Scope:** login lockout for every login type, rate limits (with a placeholder enquiry route), CORS allow-list, security headers, JSON body limit, audit log (model, helper, read API), ownership helper. Details: Architecture section 6.
 - **Model:** Opus to plan, Sonnet to build.
+- **Before deploying:** on Render set `CORS_ALLOWED_ORIGINS` to the exact frontend origins (without it the deployed frontend is blocked) and `NODE_ENV=production`.
 - **Live checks:**
-  - The 5th failed admin login locks for 15 minutes, per account and per IP; login works after the lock ends.
-  - The login limit (10 per 15 minutes per IP) and general API limit (300 per 15 minutes per IP) apply, using the real client IP behind Render.
-  - The deployed frontend works; other origins are blocked.
-  - Security headers are present on deployed responses.
-  - Failed logins are in the audit log.
-  - The ownership helper refuses another customer's record (route-level checks follow in steps 16 and 17).
-  - The admin login opens at the configured path; there is no public link to it.
+  - [ ] The build installs `helmet` and `express-rate-limit`; the server starts with no CORS warning.
+  - [ ] The deployed frontend logs in and loads its pages. A request from another origin gets no CORS header. Preview deployments on other origins are blocked.
+  - [ ] Response headers: helmet headers and HSTS present, no `X-Powered-By`.
+  - [ ] **Client IP:** the audit log shows your real public IP, not a Render or Cloudflare address. If it shows a proxy address, the proxy trust setting is wrong: lockouts and rate limits would be shared by all users. Also check that a made-up `X-Forwarded-For` header does not change the recorded IP.
+  - [ ] 5 wrong passwords, then the correct one gives 429. It works after 15 minutes. The login page shows the message.
+  - [ ] MongoDB has `loginattempts` with the unique `key` index and the TTL index on `expiresAt`; old records disappear (TTL runs about once a minute).
+  - [ ] A lock survives a manual restart and a cold start.
+  - [ ] The 11th login request in 15 minutes from one IP gets 429; the 6th enquiry request in an hour gets 429, and earlier ones 501.
+  - [ ] **Restart and cold start:** after a restart, a deploy, or about 15 idle minutes (spin-down), rate-limit counts start again from zero.
+  - [ ] Normal admin use stays under 300 requests per 15 minutes, including several staff on one connection.
+  - [ ] `GET /api/audit-log` shows the logins, and its date filter matches India dates.
+  - [ ] An unknown email and a wrong password take about the same time to be refused.
+- **Events to wire into the audit log later:** password change and reset; creating or disabling a customer account; invoice generate, edit and reverse; payment record and void; order approve and reject; Settings changes (especially bank details); manual stock changes; enquiry delete. Use `failClosed: true` for money and security events, and pass the session inside transactions.
 
 ### Step 13: Design system and shell
 
-- **Scope:** navy theme, dark mode, grouped sidebar, login pages, optional password banner, dashboard. Finalise the dashboard card list.
+- **Scope:** navy theme, dark mode, grouped sidebar, login pages, optional password banner, dashboard, Audit Log page, hidden admin login address (a frontend setting). Finalise the dashboard card list.
 - **Model:** Sonnet.
 - **Live checks:**
   - 360, 390 and 430px, tablet and desktop, in light and dark mode.
   - Every built page is still reachable from the sidebar and on phones.
-  - Both login pages work. The admin page is `noindex`.
+  - Both login pages work and show the lockout and rate-limit messages. The admin page is `noindex`, opens at the configured address and has no public link.
   - The banner can be dismissed and does not force a password change.
+  - The Audit Log page is admin-only, read-only, and its filters work.
 
 ### Step 14: Public website, Enquiries inbox and Notifications
 
@@ -359,7 +381,7 @@ All steps are **PLANNED**. Each follows section 4 before it starts. Rules are in
 
 ### Step 15: Settings and final invoice
 
-- **Scope:** Settings (company, bank, QR, invoice, website and enquiry, security), invoice layout v5, draft, preview, generate, 48-hour edit window with history, required Batch No. Settle the step 15 open questions (Architecture section 15) first.
+- **Scope:** Settings (company, bank, QR, invoice, website and enquiry, security), invoice layout v5, draft, preview, generate, 48-hour edit window with history, required Batch No. Settle the step 15 open questions (Architecture section 15) first. File uploads (logo, UPI QR) need their own size limit and type checks, because the 100 KB limit covers JSON only. If the API serves these images, relax the `Cross-Origin-Resource-Policy` header for them. Record Settings changes (especially bank details) and invoice events in the audit log, fail closed.
 - **Model:** Opus to plan, Sonnet to build.
 - **Live checks:**
   - Settings save and are admin-only; the QR uploads and removes.
@@ -372,7 +394,7 @@ All steps are **PLANNED**. Each follows section 4 before it starts. Rules are in
 
 ### Step 16: Orders, customer accounts and Shipments
 
-- **Scope:** customer accounts, orders and approval flow, Shipments replacing challans. Plan Shipment details first. Before removing challan code, confirm the challans collection is empty.
+- **Scope:** customer accounts, orders and approval flow, Shipments replacing challans. Plan Shipment details first. Before removing challan code, confirm the challans collection is empty. For logins: customer logins use the shared guarded login with their own `loginType`; `User` gets the customer link and `verifyToken` passes it on, for the ownership helper. Decide how lockout counts an account that can sign in by mobile or email.
 - **Model:** Opus to plan, Sonnet to build.
 - **Live checks:**
   - Admin creates a login; the customer signs in with mobile or email.
